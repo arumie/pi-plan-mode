@@ -2,6 +2,17 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.0.2] - 2026-08-18
+
+### Changed
+
+- Preserve complete normalized plan-step descriptions in managed todo frontmatter, including upgrades for legacy truncated entries when a saved plan is opened.
+- Make the compact progress widget responsive to terminal width while retaining its fixed row budget and accurate `+N more` summary.
+
+### Added
+
+- ANSI- and Unicode-display-width-safe widget label truncation, plus regression coverage for full-description persistence and narrow terminals.
+
 ## [1.0.1] - 2026-08-18
 
 ### Changed

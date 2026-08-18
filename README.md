@@ -6,10 +6,10 @@
 
 ## Install
 
-Install the initial release from its pinned Git tag:
+Install the latest release from its pinned Git tag:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.1
+pi install git:github.com/arumie/pi-plan-mode@v1.0.2
 ```
 
 Restart pi (or run `/reload`) after installing. Confirm the package is registered with `pi list`.
@@ -62,8 +62,8 @@ Git tags are the release mechanism:
 1. Update `package.json`'s version, `CHANGELOG.md`, and documentation.
 2. Run `npm run release:check`.
 3. Commit and push `main`.
-4. Create and push an annotated semantic-version tag, for example `v1.0.1`.
-5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.0.1`.
+4. Create and push an annotated semantic-version tag, for example `v1.0.2`.
+5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.0.2`.
 
 A Git ref in `pi install` is pinned. `pi update --extensions` reconciles the configured ref but does not advance it to a newer tag; install the new tag explicitly when upgrading. Remove the package with:
 
