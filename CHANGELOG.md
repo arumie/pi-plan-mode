@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.0.3] - 2026-08-18
+
+### Changed
+
+- Replace assistant-authored `[DONE:n]` markers with the execution-only `complete_plan_step` tool. The tool records only the next unfinished step, rejects invalid or repeated calls without mutating progress, and keeps session and on-disk todo state synchronized.
+
 ## [1.0.2] - 2026-08-18
 
 ### Changed

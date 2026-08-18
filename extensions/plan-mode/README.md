@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.2
+pi install git:github.com/arumie/pi-plan-mode@v1.0.3
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -18,7 +18,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Bash allowlist**: Only read-only bash commands are allowed, checked structurally (quote-aware) so read-only research like `gh pr view` and `rg -ln "a|b"` works
 - **Plan extraction**: Extracts numbered steps from `Plan:` sections, folding multi-line steps into one label
 - **Progress tracking**: A compact, width-responsive widget shows progress during execution - completed steps collapse into one summary line, the current step is highlighted, and the tail is summarized as `+N more` while each full saved description is ellipsized only to fit the current terminal width (see [Progress widget](#progress-widget))
-- **[DONE:n] markers**: Explicit step completion tracking
+- **Step-completion tool**: `complete_plan_step` explicitly records each completed step
 - **Session persistence**: State survives session resume
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode in one screen
 - **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
@@ -52,7 +52,7 @@ Plan:
 ```
 
 4. Choose "Execute the plan" when prompted, then confirm (or change) the model, thinking level and step-gating mode in the pre-flight panel
-5. During execution, the agent marks steps complete with `[DONE:n]` tags
+5. During execution, the agent calls `complete_plan_step` after finishing each step
 6. Progress widget shows completion status and the current step-gating mode (compact - see [Progress widget](#progress-widget); `/todos` prints the full list)
 
 At step 4, if the plan was never saved to disk during planning, the extension auto-saves it to `~/.pi/plans/` (or `$PI_PLAN_DIR`) so execution always has a durable, resumable home from the start.
@@ -84,7 +84,7 @@ The choices are applied with `pi.setModel()` / `pi.setThinkingLevel()`. Those al
 `After each step` has two modes, persisted per plan and changeable at any time with `/plan step`:
 
 - **keep going** (default): the agent is told to continue straight into the next remaining step without waiting for confirmation, until the plan is finished - the previous behaviour.
-- **stop after each step**: the agent is told that after tagging a completed step it must "STOP: end your turn there. Do not start the next step, do not call further tools". When the run ends, the extension asks:
+- **stop after each step**: the agent is told that after `complete_plan_step` succeeds it must "STOP: end your turn there. Do not start the next step, do not call further tools". When the run ends, the extension asks:
 
   ```
   Step 2/7 complete - continue?
@@ -110,7 +110,7 @@ after each step: keep going
 
 - `☑ N done · M left` - all completed steps, collapsed into one summary line (`N done · all steps complete` once the plan is finished, when it is the only row).
 - `▶ n. ...` - the step being worked on (the first step that is not completed yet), in the accent color.
-- `☐ n. ...` - the next pending steps, numbered to match `/todos`, the `📋 completed/total` footer and the `[DONE:n]` tags.
+- `☐ n. ...` - the next pending steps, numbered to match `/todos` and the `📋 completed/total` footer.
 - `  +N more` - how many remaining steps did not fit.
 
 Todo descriptions in the extension-managed frontmatter are stored in full (after inline Markdown is normalized and multiline/nested text is folded). The TUI widget uses a custom component, whose `render(width)` runs again after terminal-width changes. Each current/pending row reserves space for its glyph and step number, then ellipsizes only its label with ANSI- and Unicode-display-width-safe truncation. It therefore stays one terminal line per row while a wider terminal automatically reveals more of the durable description.
@@ -149,7 +149,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 ```
 
 - `repo`/`title`/`date` may be authored by the agent (or left out and backfilled, see above).
-- `todos` is **exclusively extension-managed** — a single-line JSON array, derived from the plan body's numbered `Plan:` steps and kept in sync with execution progress. Each `text` value retains the complete normalized/folded step description; screen-width elision happens only in the compact widget. The agent never authors or edits this field directly; it keeps using the `[DONE:n]` chat-tag protocol as always, and the extension translates that into on-disk frontmatter.
+- `todos` is **exclusively extension-managed** — a single-line JSON array, derived from the plan body's numbered `Plan:` steps and kept in sync with execution progress. Each `text` value retains the complete normalized/folded step description; screen-width elision happens only in the compact widget. The agent never authors or edits this field directly; progress changes only after `complete_plan_step` succeeds, and the extension mirrors that result into on-disk frontmatter.
 - `model` (a `"provider/modelId"` reference), `thinking` and `stepMode` (`continue` | `stop`) are **also exclusively extension-managed**: they record what the plan last executed with, are written by the pre-flight panel (and by `/plan step`), and are re-offered when the plan is resumed. Invalid values are ignored on read, an unknown/unavailable model falls back to the current one with a warning, and rewriting a plan's body never drops them.
 - Plan files saved before this feature existed have no frontmatter block at all; every field falls back gracefully (heading-based title, filename-derived date, no `todos` ⇒ nothing to resume) and nothing about them is rewritten.
 
@@ -157,7 +157,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 - Full tool access restored
 - The model/thinking level chosen in the pre-flight panel are applied, and restored when the plan finishes
 - Agent executes steps in order
-- `[DONE:n]` markers track completion
+- Agent calls `complete_plan_step` after each finished step; it rejects calls outside execution, repeated steps, missing steps, and out-of-order steps without changing progress
 - Widget shows progress and the current step-gating mode
 - In `stop after each step` mode, a `Step n/N complete - continue?` prompt appears after each completed step
 - The backing plan file's `todos` frontmatter is kept in sync on disk as steps complete (and once more when the plan finishes), so progress survives a session restart or a resume via `/plan list`

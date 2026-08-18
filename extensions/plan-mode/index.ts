@@ -8,7 +8,7 @@
  * - /plan command or Ctrl+Alt+P to toggle
  * - Bash restricted to allowlisted read-only commands
  * - Extracts numbered plan steps from "Plan:" sections
- * - [DONE:n] markers to complete steps during execution
+ * - A completion tool to mark steps done during execution
  * - Progress tracking widget during execution
  */
 
@@ -33,7 +33,6 @@ import {
 	isPlanFilePath,
 	checkCommandSafety,
 	listSavedPlans,
-	markCompletedSteps,
 	normalizePlanContent,
 	type ModelPickerScope,
 	normalizeStepMode,
@@ -107,23 +106,23 @@ function getTextContent(message: AssistantMessage): string {
  * by the execution context injected before each run and by the messages that
  * kick off / resume a plan, so the two can never drift apart.
  *
- * The `stop` variant is how step gating is enforced: there is no forced abort,
- * the agent is simply told to end its turn after tagging a step, and the
- * extension then asks the user whether to continue.
+ * The `stop` variant is how step gating is enforced: after the completion
+ * tool succeeds, the agent ends its turn and the extension asks the user
+ * whether to continue.
  */
 function buildExecutionInstructions(mode: StepMode): string {
-	const tagging =
-		"Work on ONE step at a time, in order. The moment you finish a step - in that same turn's response, before starting anything else - include its [DONE:n] tag. Do not wait until the whole plan is done to add all the tags at once, and do not batch them at the end.";
+	const completion =
+		"Work on ONE step at a time, in order. The moment you finish a step, call complete_plan_step with that step number before starting anything else. Do not wait until the whole plan is done, do not batch calls, and do not claim a step is complete without successfully calling the tool.";
 
 	if (mode === "stop") {
-		return `${tagging}
+		return `${completion}
 
-After tagging a completed step, STOP: end your turn there. Do not start the next step, do not call further tools, and do not describe the next step's work - the user will confirm before you continue.`;
+After complete_plan_step succeeds, STOP: end your turn there. Do not start the next step, do not call further tools, and do not describe the next step's work - the user will confirm before you continue.`;
 	}
 
-	return `${tagging}
+	return `${completion}
 
-After tagging a completed step, continue straight into the next remaining step without waiting for confirmation, until the plan is finished.`;
+After complete_plan_step succeeds, continue straight into the next remaining step without waiting for confirmation, until the plan is finished.`;
 }
 
 export default function planModeExtension(pi: ExtensionAPI): void {
@@ -390,6 +389,72 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 						},
 					],
 					details: { path, todos: normalized.todos.length },
+				};
+			});
+		},
+	});
+
+	/**
+	 * Records exactly one completed execution step. The active plan's file path
+	 * is also the mutation-queue key, serializing sibling tool calls so they
+	 * cannot both complete the same next step.
+	 */
+	pi.registerTool({
+		name: "complete_plan_step",
+		label: "Complete Plan Step",
+		description:
+			"Mark the current plan step complete after its work is finished. Only use during plan execution, once per step, and always complete steps in order.",
+		promptSnippet: "Mark the current plan step complete after finishing it",
+		promptGuidelines: [
+			"During plan execution, call complete_plan_step immediately after finishing each step. Complete only the next unfinished step, in order.",
+		],
+		parameters: Type.Object({
+			step: Type.Integer({ minimum: 1, description: "The completed plan step number" }),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (signal?.aborted) throw new Error("Plan step completion cancelled.");
+			if (!executionMode || todoItems.length === 0) {
+				throw new Error("complete_plan_step is only available while a plan is executing.");
+			}
+
+			const path = activePlanPath ?? "__plan-mode-session-only__";
+			return withFileMutationQueue(path, async () => {
+				if (!executionMode || todoItems.length === 0) {
+					throw new Error("complete_plan_step is only available while a plan is executing.");
+				}
+
+				const requested = todoItems.find((item) => item.step === params.step);
+				if (!requested) throw new Error(`Plan step ${params.step} does not exist.`);
+				if (requested.completed) throw new Error(`Plan step ${params.step} is already complete.`);
+
+				const next = todoItems.find((item) => !item.completed);
+				if (!next || next.step !== params.step) {
+					throw new Error(`Complete step ${next?.step ?? "the next unfinished step"} before step ${params.step}.`);
+				}
+
+				requested.completed = true;
+				stepsCompletedThisRun++;
+				updateStatus(ctx);
+				persistState();
+				if (activePlanPath) {
+					try {
+						await writePlanTodos(activePlanPath, todoItems);
+					} catch {
+						// Progress is already persisted in the session; disk sync is best-effort.
+					}
+				}
+
+				const nextStep = todoItems.find((item) => !item.completed);
+				return {
+					content: [
+						{
+							type: "text",
+							text: nextStep
+								? `Completed step ${requested.step}: ${requested.text}\nNext step: ${nextStep.step}. ${nextStep.text}`
+								: `Completed step ${requested.step}: ${requested.text}\nAll plan steps are complete.`,
+						},
+					],
+					details: { completedStep: requested.step, nextStep: nextStep?.step },
 				};
 			});
 		},
@@ -1123,20 +1188,8 @@ ${buildExecutionInstructions(stepMode)}`,
 		}
 	});
 
-	// Filter out stale plan mode context when not in plan mode.
-	//
-	// NOTE: this hook must stay filter-only. It used to also append a fresh
-	// [DONE:n] reminder here on every single turn, but that message was never
-	// persisted — it only existed in the outgoing request for that one call.
-	// Since it always sat at the very tail of the array, right where the *next*
-	// turn's real content would go instead, the cache write for that request
-	// could never be read back by any future request (the position after real
-	// history never matches a reminder again — it matches real assistant/tool
-	// content). That pinned cache reads to the fixed system+tools prefix for the
-	// whole execution run and forced a full rewrite of the growing conversation
-	// on every turn, regardless of whether the reminder's own text was stable.
-	// The reminder now lives in turn_end below, sent as a real persisted message
-	// so it becomes part of history the next call can actually cache-read.
+	// Filter out stale plan mode context when not in plan mode. Execution
+	// progress is recorded by complete_plan_step, so this hook stays filter-only.
 	pi.on("context", async (event) => {
 		if (planModeEnabled) return;
 
@@ -1204,7 +1257,7 @@ ${todoList}
 
 ${buildExecutionInstructions(stepMode)}
 
-This instruction is only shown once, at the start of this execution run — there is no repeated reminder, so tag each step as soon as you finish it rather than waiting for a nudge.`,
+This instruction is only shown once, at the start of this execution run — call complete_plan_step as soon as you finish each step rather than waiting for a nudge.`,
 					display: false,
 				},
 			};
@@ -1215,29 +1268,6 @@ This instruction is only shown once, at the start of this execution run — ther
 	// pause prompt only reacts to work done in the run that just finished.
 	pi.on("agent_start", async () => {
 		stepsCompletedThisRun = 0;
-	});
-
-	// Track progress after each turn
-	pi.on("turn_end", async (event, ctx) => {
-		if (!executionMode || todoItems.length === 0) return;
-		if (!isAssistantMessage(event.message)) return;
-
-		const text = getTextContent(event.message);
-		// Count only steps that were still open, so a repeated [DONE:n] tag for an
-		// already-completed step cannot trigger the pause prompt.
-		const openBefore = todoItems.filter((t) => !t.completed).length;
-		if (markCompletedSteps(text, todoItems) > 0) {
-			stepsCompletedThisRun += openBefore - todoItems.filter((t) => !t.completed).length;
-			updateStatus(ctx);
-			if (activePlanPath) {
-				try {
-					await writePlanTodos(activePlanPath, todoItems);
-				} catch {
-					// Best-effort disk sync; never let it interrupt the turn.
-				}
-			}
-		}
-		persistState();
 	});
 
 	// Handle plan completion and plan mode UI
@@ -1265,7 +1295,7 @@ This instruction is only shown once, at the start of this execution run — ther
 				return;
 			}
 
-			// Step gating: the agent was told to stop after tagging a step, so ask
+			// Step gating: the agent was told to stop after completing a step, so ask
 			// whether to continue. Only when a step actually completed during this run
 			// - a run that merely stopped to ask a question must not be hijacked by a
 			// "continue?" prompt.
@@ -1462,48 +1492,13 @@ ${buildExecutionInstructions(stepMode)}`;
 			modelSnapshot = planModeEntry.data.modelSnapshot ?? modelSnapshot;
 		}
 
-		// On resume: prefer on-disk todos (authoritative) over re-scanning chat
-		// history, since the extension keeps `activePlanPath`'s frontmatter in
-		// sync as steps complete. Only fall back to rescanning messages after
-		// the last "plan-mode-execute" entry for [DONE:n] tags when there's no
-		// active plan path or its file can't be read (e.g. deleted/moved, or a
-		// session that predates this feature).
-		const isResume = planModeEntry !== undefined;
-		if (isResume && executionMode && todoItems.length > 0) {
-			let usedOnDiskTodos = false;
-			if (activePlanPath) {
-				const onDisk = await readPlanFrontmatter(activePlanPath);
-				if (onDisk?.frontmatter.todos && onDisk.frontmatter.todos.length > 0) {
-					todoItems = onDisk.frontmatter.todos;
-					usedOnDiskTodos = true;
-				}
-			}
-
-			if (!usedOnDiskTodos) {
-				// Find the index of the last plan-mode-execute entry (marks when current execution started)
-				let executeIndex = -1;
-				for (let i = entries.length - 1; i >= 0; i--) {
-					const entry = entries[i] as { type: string; customType?: string };
-					if (entry.customType === "plan-mode-execute") {
-						executeIndex = i;
-						break;
-					}
-				}
-
-				// Only scan messages after the execute marker
-				const messages: AssistantMessage[] = [];
-				for (let i = executeIndex + 1; i < entries.length; i++) {
-					const entry = entries[i];
-					if (
-						entry.type === "message" &&
-						"message" in entry &&
-						isAssistantMessage(entry.message as AgentMessage)
-					) {
-						messages.push(entry.message as AssistantMessage);
-					}
-				}
-				const allText = messages.map(getTextContent).join("\n");
-				markCompletedSteps(allText, todoItems);
+		// On resume, on-disk todos are authoritative when available. If the file
+		// is unavailable, keep the session-persisted state; completion is never
+		// inferred from assistant text.
+		if (planModeEntry !== undefined && executionMode && todoItems.length > 0 && activePlanPath) {
+			const onDisk = await readPlanFrontmatter(activePlanPath);
+			if (onDisk?.frontmatter.todos && onDisk.frontmatter.todos.length > 0) {
+				todoItems = onDisk.frontmatter.todos;
 			}
 		}
 

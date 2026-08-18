@@ -276,7 +276,7 @@ export interface PlanFrontmatter {
 	 * YAML list) so it can be parsed/serialized with plain JSON.parse/
 	 * JSON.stringify. This field is exclusively written by the plan-mode
 	 * extension itself (via `writePlanTodos`) - agents should never hand-edit
-	 * it; they keep using `[DONE:n]` chat tags as today.
+	 * it; completion is recorded by the extension's execution tool.
 	 */
 	todos?: TodoItem[];
 }
@@ -1264,24 +1264,6 @@ export function extractTodoItems(message: string): TodoItem[] {
 	flush();
 
 	return items;
-}
-
-export function extractDoneSteps(message: string): number[] {
-	const steps: number[] = [];
-	for (const match of message.matchAll(/\[DONE:(\d+)\]/gi)) {
-		const step = Number(match[1]);
-		if (Number.isFinite(step)) steps.push(step);
-	}
-	return steps;
-}
-
-export function markCompletedSteps(text: string, items: TodoItem[]): number {
-	const doneSteps = extractDoneSteps(text);
-	for (const step of doneSteps) {
-		const item = items.find((t) => t.step === step);
-		if (item) item.completed = true;
-	}
-	return doneSteps.length;
 }
 
 /**
