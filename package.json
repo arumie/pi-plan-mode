@@ -1,0 +1,49 @@
+{
+  "name": "@arumie/pi-plan-mode",
+  "version": "1.0.0",
+  "description": "A read-only planning and guided execution mode extension for pi",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "plan-mode",
+    "planning",
+    "coding-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arumie/pi-plan-mode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/arumie/pi-plan-mode/issues"
+  },
+  "homepage": "https://github.com/arumie/pi-plan-mode#readme",
+  "files": [
+    "extensions/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types extensions/plan-mode/utils.test.ts",
+    "typecheck": "tsc --noEmit",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
