@@ -17,7 +17,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Writes limited to plans dir**: Only markdown files under `~/.pi/plans/` (override with `PI_PLAN_DIR`) can be written/edited; all other paths are blocked
 - **Bash allowlist**: Only read-only bash commands are allowed, checked structurally (quote-aware) so read-only research like `gh pr view` and `rg -ln "a|b"` works
 - **Plan extraction**: Extracts numbered steps from `Plan:` sections, folding multi-line steps into one label
-- **Progress tracking**: A compact widget shows progress during execution - completed steps collapse into one summary line, the current step is highlighted, and the tail is summarized as `+N more` so the list never gets truncated (see [Progress widget](#progress-widget))
+- **Progress tracking**: A compact, width-responsive widget shows progress during execution - completed steps collapse into one summary line, the current step is highlighted, and the tail is summarized as `+N more` while each full saved description is ellipsized only to fit the current terminal width (see [Progress widget](#progress-widget))
 - **[DONE:n] markers**: Explicit step completion tracking
 - **Session persistence**: State survives session resume
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode in one screen
@@ -113,7 +113,9 @@ after each step: keep going
 - `☐ n. ...` - the next pending steps, numbered to match `/todos`, the `📋 completed/total` footer and the `[DONE:n]` tags.
 - `  +N more` - how many remaining steps did not fit.
 
-The reason for collapsing: pi's TUI hard-caps string-array widgets at `InteractiveMode.MAX_WIDGET_LINES` (10 lines) and replaces the overflow with `... (widget truncated)`. Since completed steps render first, a plan with more than ~9 steps used to lose exactly the part that mattered - everything still to do. `buildTodoWidgetRows` in `utils.ts` therefore emits at most `MAX_TODO_WIDGET_ROWS` (8) rows, leaving room for the trailing `after each step: ...` line plus one spare, so the truncation marker can never appear. A unit test sweeps plan sizes 1..30 as a regression guard.
+Todo descriptions in the extension-managed frontmatter are stored in full (after inline Markdown is normalized and multiline/nested text is folded). The TUI widget uses a custom component, whose `render(width)` runs again after terminal-width changes. Each current/pending row reserves space for its glyph and step number, then ellipsizes only its label with ANSI- and Unicode-display-width-safe truncation. It therefore stays one terminal line per row while a wider terminal automatically reveals more of the durable description.
+
+The compact row count intentionally remains fixed. pi's TUI hard-caps string-array widgets at `InteractiveMode.MAX_WIDGET_LINES` (10 lines), and a long plan used to lose exactly the still-pending portion. `buildTodoWidgetRows` in `utils.ts` still emits at most `MAX_TODO_WIDGET_ROWS` (8) structural rows: summary, current step, pending steps, and an exact `+N more` tail. TUI mode renders those rows with the width-responsive component; RPC/non-TUI clients receive a bounded string-array fallback. Unit tests cover long-description persistence, width boundaries, and the fixed-row `+N more` regression sweep.
 
 For the full, uncollapsed list at any time, use `/todos`.
 
@@ -147,7 +149,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 ```
 
 - `repo`/`title`/`date` may be authored by the agent (or left out and backfilled, see above).
-- `todos` is **exclusively extension-managed** — a single-line JSON array, derived from the plan body's numbered `Plan:` steps and kept in sync with execution progress. The agent never authors or edits this field directly; it keeps using the `[DONE:n]` chat-tag protocol as always, and the extension translates that into on-disk frontmatter.
+- `todos` is **exclusively extension-managed** — a single-line JSON array, derived from the plan body's numbered `Plan:` steps and kept in sync with execution progress. Each `text` value retains the complete normalized/folded step description; screen-width elision happens only in the compact widget. The agent never authors or edits this field directly; it keeps using the `[DONE:n]` chat-tag protocol as always, and the extension translates that into on-disk frontmatter.
 - `model` (a `"provider/modelId"` reference), `thinking` and `stepMode` (`continue` | `stop`) are **also exclusively extension-managed**: they record what the plan last executed with, are written by the pre-flight panel (and by `/plan step`), and are re-offered when the plan is resumed. Invalid values are ignored on read, an unknown/unavailable model falls back to the current one with a warning, and rewriting a plan's body never drops them.
 - Plan files saved before this feature existed have no frontmatter block at all; every field falls back gracefully (heading-based title, filename-derived date, no `todos` ⇒ nothing to resume) and nothing about them is rewritten.
 
@@ -194,7 +196,7 @@ Blocked (examples):
 
 ## Tests
 
-`utils.ts` (bash gating, frontmatter, todo extraction/sync, compact widget rows, execution settings, thinking-level list, model-picker rows) has a dependency-free test file:
+`utils.ts` (bash gating, frontmatter, full-description todo extraction/sync, width-aware compact widget labels/rows, execution settings, thinking-level list, model-picker rows) has a test file:
 
 ```sh
 node --experimental-strip-types extensions/plan-mode/utils.test.ts

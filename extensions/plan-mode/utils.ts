@@ -8,6 +8,7 @@ import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const execFileAsync = promisify(execFile);
 
@@ -582,7 +583,17 @@ export function mergeTodoCompletion(next: TodoItem[], previous: TodoItem[] | und
 	return next.map((item) => {
 		const match =
 			previous.find((p) => p.step === item.step && p.text === item.text) ??
-			previous.find((p) => p.text === item.text);
+			previous.find((p) => p.text === item.text) ??
+			// Plans written before width-aware rendering stored a 70-character
+			// presentation label ending in `...`. Re-expand that legacy value from
+			// the body without losing its recorded completion state; a changed full
+			// description still does not match unless its saved prefix does.
+			previous.find(
+				(p) =>
+					p.step === item.step &&
+					p.text.endsWith("...") &&
+					item.text.startsWith(p.text.slice(0, -3)),
+			);
 		return match ? { ...item, completed: match.completed } : item;
 	});
 }
@@ -1185,11 +1196,10 @@ export interface TodoItem {
 }
 
 /**
- * Maximum length of a rendered todo label. Long enough to stay meaningful in
- * the progress widget and in "Start with: ..." execution prompts.
+ * Normalizes a plan step for durable storage and execution context. Rendering
+ * applies its own width-aware truncation, so this must retain the full cleaned
+ * description rather than imposing a presentation-length limit.
  */
-const MAX_STEP_TEXT_LENGTH = 70;
-
 export function cleanStepText(text: string): string {
 	let cleaned = text
 		.replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // Remove bold/italic
@@ -1201,12 +1211,6 @@ export function cleanStepText(text: string): string {
 
 	if (cleaned.length > 0) {
 		cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-	}
-	if (cleaned.length > MAX_STEP_TEXT_LENGTH) {
-		const hard = cleaned.slice(0, MAX_STEP_TEXT_LENGTH - 3);
-		const lastSpace = hard.lastIndexOf(" ");
-		const body = lastSpace > MAX_STEP_TEXT_LENGTH / 2 ? hard.slice(0, lastSpace) : hard;
-		cleaned = `${body.replace(/[\s,;:.]+$/, "")}...`;
 	}
 	return cleaned;
 }
@@ -1290,6 +1294,17 @@ export type TodoWidgetRow =
 	| { kind: "current"; step: number; text: string }
 	| { kind: "pending"; step: number; text: string }
 	| { kind: "more"; count: number };
+
+/**
+ * Fits a full todo description into the columns remaining after its rendered
+ * glyph/number prefix. The prefix is supplied unstyled so `visibleWidth` can
+ * reserve the same space that the themed widget will occupy; `truncateToWidth`
+ * then accounts for Unicode and ANSI text safely when rendering the label.
+ */
+export function formatTodoWidgetText(text: string, prefix: string, width: number): string {
+	const textWidth = Math.max(0, width - visibleWidth(prefix));
+	return truncateToWidth(text, textWidth);
+}
 
 /**
  * Maximum number of todo rows the compact widget emits.

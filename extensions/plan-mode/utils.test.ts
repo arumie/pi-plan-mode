@@ -8,12 +8,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	buildModelPickerItems,
 	buildTodoWidgetRows,
 	checkCommandSafety,
 	extractTodoItems,
 	formatModelRef,
+	formatTodoWidgetText,
 	MAX_TODO_WIDGET_ROWS,
 	normalizeStepMode,
 	normalizePlanContent,
@@ -161,6 +163,15 @@ Not a step.
 	);
 });
 
+await check("extractTodoItems retains complete normalized long step descriptions", () => {
+	const longStep =
+		"Implement the width-responsive plan widget without losing the complete durable description stored in frontmatter for execution and resume flows.";
+	const items = extractTodoItems(`Plan:\n\n1. ${longStep}\n`);
+	assert.equal(items.length, 1);
+	assert.equal(items[0]?.text, longStep.slice(0, -1));
+	assert.ok((items[0]?.text.length ?? 0) > 70, "long descriptions must not be capped for storage");
+});
+
 await check("extractTodoItems accepts a markdown '## Plan' heading (no colon)", () => {
 	const items = extractTodoItems(`# Some Title
 
@@ -273,6 +284,23 @@ Plan:
 	// a body without plan steps leaves existing todos untouched
 	await writeFile(path, `---\nrepo: my-repo\n---\n\n# Example\n\nNo steps here.\n`, "utf8");
 	assert.deepEqual(await syncPlanTodosFromBody(path), []);
+});
+
+await check("syncPlanTodosFromBody upgrades legacy truncated descriptions without resetting completion", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-legacy-todo-"));
+	const path = join(dir, "2026-08-18-legacy.md");
+	const full =
+		"Preserve the entire normalized plan step description in durable frontmatter while rendering it responsively in the widget";
+	const legacy = `${full.slice(0, 67)}...`;
+	await writeFile(
+		path,
+		`---\ntodos: [{"step":1,"text":"${legacy}","completed":true}]\n---\n\nPlan:\n\n1. ${full}\n`,
+		"utf8",
+	);
+
+	const synced = await syncPlanTodosFromBody(path);
+	assert.deepEqual(synced, [{ step: 1, text: full, completed: true }]);
+	assert.deepEqual(parseFrontmatter(await readFile(path, "utf8")).frontmatter.todos, synced);
 });
 
 // --- execution settings: model refs & step mode ----------------------------
@@ -459,6 +487,25 @@ await check("writePlanExecutionSettings merges without disturbing todos or body"
 });
 
 // --- compact todo widget rows ----------------------------------------------
+
+await check("formatTodoWidgetText truncates only the display label to its available width", () => {
+	const prefix = "▶ 12. ";
+	const full = "Preserve the complete description 🧪 when the terminal becomes narrow";
+	const wide = formatTodoWidgetText(full, prefix, 120);
+	assert.equal(wide, full, "wide terminals must show the full saved description");
+
+	const narrow = formatTodoWidgetText(full, prefix, 18);
+	assert.ok(visibleWidth(narrow) <= 18 - visibleWidth(prefix));
+	assert.ok(narrow.includes("..."), narrow);
+	assert.notEqual(narrow, full);
+
+	const ansi = "\x1b[31mwide 🧪 description\x1b[0m";
+	const ansiNarrow = formatTodoWidgetText(ansi, prefix, 14);
+	assert.ok(visibleWidth(ansiNarrow) <= 14 - visibleWidth(prefix));
+	assert.ok(ansiNarrow.endsWith("\x1b[0m") || ansiNarrow.endsWith("..."), ansiNarrow);
+	assert.equal(formatTodoWidgetText(full, prefix, visibleWidth(prefix) - 1), "");
+});
+
 
 function todos(total: number, completed: number): TodoItem[] {
 	return Array.from({ length: total }, (_, i) => ({

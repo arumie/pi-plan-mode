@@ -18,7 +18,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { DynamicBorder, isToolCallEventType, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Container, Key, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	buildModelPickerItems,
@@ -29,6 +29,7 @@ import {
 	extractPlanTitle,
 	extractTodoItems,
 	formatModelRef,
+	formatTodoWidgetText,
 	isPlanFilePath,
 	checkCommandSafety,
 	listSavedPlans,
@@ -170,33 +171,49 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			ctx.ui.setStatus("plan-mode", undefined);
 		}
 
-		// Widget showing a compact view of the todo list. `buildTodoWidgetRows`
-		// keeps the row count under pi's widget line cap, so the steps still to do
-		// are never the ones truncated away; `/todos` prints the full list.
+		// `buildTodoWidgetRows` intentionally keeps its fixed compact row budget;
+		// only the label text responds to terminal width. A component factory gets
+		// `render(width)` again after a resize, unlike a pre-rendered string array.
 		if (executionMode && todoItems.length > 0) {
-			const theme = ctx.ui.theme;
-			const lines = buildTodoWidgetRows(todoItems).map((row: TodoWidgetRow) => {
-				switch (row.kind) {
-					case "summary":
-						return (
-							theme.fg("success", "☑ ") +
-							theme.fg(
-								"muted",
-								row.remaining === 0
-									? `${row.completed} done · all steps complete`
-									: `${row.completed} done · ${row.remaining} left`,
-							)
-						);
-					case "current":
-						return theme.fg("accent", "▶ ") + theme.fg("accent", `${row.step}. ${row.text}`);
-					case "pending":
-						return `${theme.fg("muted", "☐ ")}${row.step}. ${row.text}`;
-					case "more":
-						return theme.fg("dim", `  +${row.count} more`);
-				}
-			});
-			lines.push(theme.fg("dim", `after each step: ${stepModeLabel(stepMode)}`));
-			ctx.ui.setWidget("plan-todos", lines);
+			const renderTodoWidgetLines = (width: number, theme: ExtensionContext["ui"]["theme"]): string[] => {
+				const lines = buildTodoWidgetRows(todoItems).map((row: TodoWidgetRow) => {
+					switch (row.kind) {
+						case "summary":
+							return (
+								theme.fg("success", "☑ ") +
+								theme.fg(
+									"muted",
+									row.remaining === 0
+										? `${row.completed} done · all steps complete`
+										: `${row.completed} done · ${row.remaining} left`,
+								)
+							);
+						case "current": {
+							const prefix = `▶ ${row.step}. `;
+							return theme.fg("accent", prefix) + theme.fg("accent", formatTodoWidgetText(row.text, prefix, width));
+						}
+						case "pending": {
+							const prefix = `☐ ${row.step}. `;
+							return theme.fg("muted", "☐ ") + `${row.step}. ${formatTodoWidgetText(row.text, prefix, width)}`;
+						}
+						case "more":
+							return theme.fg("dim", `  +${row.count} more`);
+					}
+				});
+				lines.push(theme.fg("dim", `after each step: ${stepModeLabel(stepMode)}`));
+				return lines.map((line) => truncateToWidth(line, width));
+			};
+
+			if (ctx.mode === "tui") {
+				ctx.ui.setWidget("plan-todos", (_tui, theme) => ({
+					render: (width: number) => renderTodoWidgetLines(width, theme),
+					invalidate: () => {},
+				}));
+			} else {
+				// RPC has no TUI render callback/terminal width, so keep a bounded,
+				// string-array representation for clients that expose widget lines.
+				ctx.ui.setWidget("plan-todos", renderTodoWidgetLines(80, ctx.ui.theme));
+			}
 		} else {
 			ctx.ui.setWidget("plan-todos", undefined);
 		}
@@ -832,6 +849,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		let content: string;
 		try {
 			content = await readFile(plan.path, "utf8");
+			// Re-stamp from the body when a saved plan is opened. Besides keeping a
+			// refined plan current, this upgrades legacy 70-character todo labels to
+			// full descriptions while preserving completion via mergeTodoCompletion.
+			const syncedTodos = await syncPlanTodosFromBody(plan.path);
+			if (syncedTodos.length > 0) {
+				plan.todos = syncedTodos;
+				content = await readFile(plan.path, "utf8");
+			}
 		} catch (err) {
 			ctx.ui.notify(`Failed to read plan: ${(err as Error).message}`, "error");
 			return;
