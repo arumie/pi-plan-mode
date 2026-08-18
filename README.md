@@ -27,6 +27,7 @@ Do not run the package alongside the legacy auto-discovered extension at `~/.pi/
 - `/plan` — toggle read-only planning mode.
 - `/plan list [filter]` — load a saved plan or resume an unfinished one.
 - `/plan step [on|off|status]` — configure pausing after each execution step.
+- `save_plan` — agent tool that saves a named plan with a generated `YYYY-MM-DD-` filename and managed frontmatter.
 - `/todos` — show the full current plan progress list.
 - `Ctrl+Alt+P` — toggle planning mode.
 - `--plan` — start pi in planning mode.

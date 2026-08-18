@@ -23,6 +23,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode in one screen
 - **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
 - **Step gating**: Optionally stop after each completed step and confirm before continuing (default: keep going)
+- **Agent plan-save tool**: `save_plan` accepts a plan name and markdown content, creates a dated file automatically, and normalizes its frontmatter
 - **`repo`/`title`/`date` frontmatter**: Plan files get a `---` fenced frontmatter block backfilled automatically on save
 - **On-disk todo tracking**: The `todos` frontmatter is written as soon as the plan file is saved (not only when execution starts) and mirrored as steps complete, so a plan can be resumed from `/plan list` in a future session
 
@@ -40,7 +41,8 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
-3. The agent should output a numbered plan under a `Plan:` header:
+3. The agent should output a numbered plan under a `Plan:` header, then save the finished plan with `save_plan` by supplying a short name and the complete markdown content. The tool creates `YYYY-MM-DD-task-summary.md` in the configured plans directory; the date is generated automatically.
+
 
 ```
 Plan:
@@ -123,7 +125,8 @@ For the full, uncollapsed list at any time, use `/todos`.
 - Other active tools remain available
 - Bash commands filtered through allowlist
 - Agent creates a plan without making changes
-- When the agent saves a plan file with `write`, missing `repo`/`title`/`date` frontmatter fields are backfilled automatically (without touching anything the agent already supplied): `repo` from `git remote get-url origin` (falling back to the cwd folder name), `title` from the first markdown heading or the filename, `date` from the filename or today
+- The agent creates a new saved plan with `save_plan`, supplying only a short name and full markdown content. The tool creates the plans directory when needed, derives a collision-free `YYYY-MM-DD-task-summary.md` filename using the current date, and supplies the plan date itself.
+- `save_plan` preserves agent-provided `repo`/`title` values when valid and backfills missing values: `repo` from `git remote get-url origin` (falling back to the cwd folder name) and `title` from the first markdown heading or supplied name. Existing `write`/`edit` calls remain available only to refine an already-saved plan and continue to backfill missing metadata without dropping extension-managed settings.
 - The `todos` frontmatter is derived from the numbered list under the file's `Plan:` header and stamped in immediately — on every `write`/`edit` of a plan file, and again when the planning turn ends — regardless of whether you then execute, keep refining, or stay in plan mode. Re-stamping preserves the `completed` state of steps whose text is unchanged
 - When a plan file was saved during the round, its body is the source of truth for the todo list; only if it has no recognizable `Plan:` steps does the extension fall back to extracting them from the chat message
 

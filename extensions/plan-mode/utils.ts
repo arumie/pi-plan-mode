@@ -417,6 +417,51 @@ export function slugify(text: string): string {
 	return (slug.length > 0 ? slug : "plan").slice(0, 60).replace(/-+$/g, "");
 }
 
+/** Builds the date-prefixed filename used for a newly saved plan. */
+export function planFilename(name: string, date: string, sequence = 1): string {
+	const suffix = sequence > 1 ? `-${sequence}` : "";
+	return `${date}-${slugify(name)}${suffix}.md`;
+}
+
+export interface PlanContentDefaults {
+	repo: string;
+	title: string;
+	date: string;
+	/** Existing extension-managed metadata to retain during a body rewrite. */
+	previous?: PlanFrontmatter;
+	/** Use the supplied date even when content already has a date field. */
+	forceDate?: boolean;
+}
+
+/**
+ * Normalizes plan content into the extension's frontmatter convention. Agent
+ * authored identity metadata is retained when present, while extension-managed
+ * settings survive rewrites and todos are derived from the Plan section.
+ */
+export function normalizePlanContent(
+	content: string,
+	defaults: PlanContentDefaults,
+): { content: string; frontmatter: PlanFrontmatter; todos: TodoItem[] } {
+	const { frontmatter, body } = parseFrontmatter(content);
+	const previous = defaults.previous;
+	frontmatter.repo ??= defaults.repo;
+	frontmatter.title ??= extractPlanTitle(body) ?? defaults.title;
+	if (defaults.forceDate || !frontmatter.date) frontmatter.date = defaults.date;
+	frontmatter.model ??= previous?.model;
+	frontmatter.thinking ??= previous?.thinking;
+	frontmatter.stepMode ??= previous?.stepMode;
+	frontmatter.todos ??= previous?.todos;
+
+	const bodyTodos = extractTodoItems(body);
+	if (bodyTodos.length > 0) frontmatter.todos = mergeTodoCompletion(bodyTodos, frontmatter.todos);
+
+	return {
+		content: stringifyFrontmatter(frontmatter) + body,
+		frontmatter,
+		todos: frontmatter.todos ?? [],
+	};
+}
+
 /**
  * Best-effort repo name detection: parses `git remote get-url origin` (works
  * for both SSH `git@host:org/repo.git` and HTTPS `https://host/org/repo.git`

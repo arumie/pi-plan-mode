@@ -12,13 +12,14 @@
  * - Progress tracking widget during execution
  */
 
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
-import { DynamicBorder, isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, isToolCallEventType, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import {
 	buildModelPickerItems,
 	buildTodoWidgetRows,
@@ -32,12 +33,12 @@ import {
 	checkCommandSafety,
 	listSavedPlans,
 	markCompletedSteps,
-	mergeTodoCompletion,
+	normalizePlanContent,
 	type ModelPickerScope,
 	normalizeStepMode,
 	normalizeThinkingLevel,
-	parseFrontmatter,
 	parseModelRef,
+	planFilename,
 	planWriteDir,
 	type PlanFrontmatter,
 	readPlanExecutionSettings,
@@ -60,7 +61,7 @@ import {
 
 // Tools
 // write/edit stay active in plan mode but are gated to the plans directory.
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>();
 const PLAN_GATED_TOOLS = new Set<string>(["write", "edit"]);
@@ -313,6 +314,69 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			return false;
 		}
 	}
+
+	/**
+	 * Saves a newly authored plan under the configured plans directory. The
+	 * custom tool owns the filename/date and normalizes extension-managed
+	 * frontmatter, so agents only need to provide a useful name and plan body.
+	 */
+	pi.registerTool({
+		name: "save_plan",
+		label: "Save Plan",
+		description:
+			"Save a completed plan in the configured plans directory. Supply a short name and the full markdown plan content; the tool adds the current date to the filename and manages frontmatter and todo tracking.",
+		promptSnippet: "Save a finished plan with a name and markdown content",
+		promptGuidelines: [
+			"Use save_plan, rather than write, to create a new plan after planning is complete. Supply the full plan body under a Plan: header; save_plan generates the dated filename and manages frontmatter."
+		],
+		parameters: Type.Object({
+			name: Type.String({ description: "Short descriptive plan name used for the generated filename" }),
+			content: Type.String({ description: "Complete markdown plan content, including its numbered Plan: section" }),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (!planModeEnabled) throw new Error("save_plan is only available while plan mode is enabled.");
+			if (signal?.aborted) throw new Error("Plan save cancelled.");
+
+			const dir = planWriteDir();
+			const today = new Date().toISOString().slice(0, 10);
+			const basePath = resolve(dir, planFilename(params.name, today));
+			await mkdir(dir, { recursive: true });
+
+			return withFileMutationQueue(basePath, async () => {
+				let path = basePath;
+				let counter = 2;
+				while (await planFileExists(path)) {
+					path = resolve(dir, planFilename(params.name, today, counter));
+					counter++;
+				}
+
+				const normalized = normalizePlanContent(params.content, {
+					repo: await detectRepoName(ctx.cwd),
+					title: params.name,
+					date: today,
+					forceDate: true,
+				});
+				await writeFile(path, normalized.content, "utf8");
+				lastSavedPlanPath = path;
+				if (normalized.todos.length > 0) {
+					todoItems = normalized.todos;
+					activePlanPath = path;
+					updateStatus(ctx);
+				}
+				persistState();
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Saved plan to ${toDisplayPath(path)}${normalized.todos.length > 0 ? ` with ${normalized.todos.length} tracked step(s).` : "."}`,
+						},
+					],
+					details: { path, todos: normalized.todos.length },
+				};
+			});
+		},
+	});
 
 	/**
 	 * Ensures there's an on-disk plan file backing the plan about to be
@@ -990,39 +1054,17 @@ ${buildExecutionInstructions(stepMode)}`,
 				try {
 					const path = resolvePlanPath(String(event.input.path), process.cwd());
 					const filename = basename(path);
-					const { frontmatter, body } = parseFrontmatter(String(event.input.content ?? ""));
-					// Frontmatter already on disk, when this write rewrites an existing
-					// plan file. Read once and reused for every extension-managed field
-					// below, since the agent's new content never carries them.
+					// Retain extension-managed settings/progress from an existing plan
+					// while backfilling missing identity metadata and deriving todos from
+					// the freshly written Plan: body.
 					const previous = (await readPlanFrontmatter(path))?.frontmatter;
-
-					if (!frontmatter.repo) {
-						frontmatter.repo = await detectRepoName(process.cwd());
-					}
-					if (!frontmatter.title) {
-						frontmatter.title = extractPlanTitle(body) ?? deriveTitleFromFilename(filename);
-					}
-					if (!frontmatter.date) {
-						frontmatter.date = extractDateFromFilename(filename) ?? new Date().toISOString().slice(0, 10);
-					}
-
-					// Execution settings are extension-managed (chosen in the pre-flight
-					// panel), so a rewrite of the plan body must never drop them.
-					frontmatter.model ??= previous?.model;
-					frontmatter.thinking ??= previous?.thinking;
-					frontmatter.stepMode ??= previous?.stepMode;
-
-					// Progress list is extension-managed: derive it from the plan body
-					// being written, keeping completion state for steps that survive.
-					// When the new body has no recognizable steps, keep the stored list
-					// rather than silently discarding recorded progress.
-					frontmatter.todos ??= previous?.todos;
-					const bodyTodos = extractTodoItems(body);
-					if (bodyTodos.length > 0) {
-						frontmatter.todos = mergeTodoCompletion(bodyTodos, frontmatter.todos);
-					}
-
-					event.input.content = stringifyFrontmatter(frontmatter) + body;
+					const normalized = normalizePlanContent(String(event.input.content ?? ""), {
+						repo: await detectRepoName(process.cwd()),
+						title: deriveTitleFromFilename(filename),
+						date: extractDateFromFilename(filename) ?? new Date().toISOString().slice(0, 10),
+						previous,
+					});
+					event.input.content = normalized.content;
 					lastSavedPlanPath = path;
 				} catch {
 					// Frontmatter backfill is best-effort; leave the write untouched.
@@ -1118,15 +1160,7 @@ Plan:
 ...
 
 Do NOT attempt to make changes to the project - just describe what you would do.
-You MAY save the finished plan to ${planWriteDir()}/YYYY-MM-DD-task-summary.md, starting the file with a frontmatter block:
-
----
-repo: repo-name
-title: Plan Title
-date: YYYY-MM-DD
----
-
-followed by the normal "# Title" heading and a "Plan:" body (use that literal header text, e.g. "Plan:" or "## Plan" - either works - immediately followed by the numbered steps). Any field you omit is backfilled automatically, so it's fine to skip this block entirely. Do NOT include a "todos" field - progress tracking is managed automatically from the numbered list under the file's "Plan:" header, so keep that numbered list in the saved file and don't hand-maintain a separate checklist section.`,
+When the finished plan is ready to save, call the save_plan tool with a short descriptive name and the full markdown content. The tool creates ${planWriteDir()}/YYYY-MM-DD-task-summary.md automatically, supplies the current date, and backfills frontmatter. Do NOT use write to create a new plan file. You may use write/edit only to refine a plan that save_plan has already created. Keep a "Plan:" body (use that literal header text, e.g. "Plan:" or "## Plan" - either works - immediately followed by numbered steps). Do NOT include a "todos" field - progress tracking is managed automatically from that numbered list, so don't hand-maintain a separate checklist section.`,
 					display: false,
 				},
 			};

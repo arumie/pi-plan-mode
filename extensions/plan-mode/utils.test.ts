@@ -16,8 +16,10 @@ import {
 	formatModelRef,
 	MAX_TODO_WIDGET_ROWS,
 	normalizeStepMode,
+	normalizePlanContent,
 	normalizeThinkingLevel,
 	parseFrontmatter,
+	planFilename,
 	parseModelRef,
 	readPlanExecutionSettings,
 	stringifyFrontmatter,
@@ -178,6 +180,57 @@ Not a step.
 	assert.equal(items.length, 2);
 	assert.equal(items[0]?.text, "First step of the plan");
 	assert.equal(items[1]?.text, "Second step of the plan");
+});
+
+// --- saved-plan filename and frontmatter normalization ---------------------
+
+await check("planFilename dates and slugifies newly saved plans", () => {
+	assert.equal(planFilename("Add a Save Plan Tool!", "2025-08-18"), "2025-08-18-add-a-save-plan-tool.md");
+	assert.equal(planFilename("***", "2025-08-18"), "2025-08-18-plan.md");
+	assert.equal(planFilename("Add a Save Plan Tool!", "2025-08-18", 2), "2025-08-18-add-a-save-plan-tool-2.md");
+});
+
+await check("normalizePlanContent forces a new plan's date and manages todos", () => {
+	const normalized = normalizePlanContent(
+		`---\ntitle: Agent supplied title\ndate: 1999-01-01\n---\n\n# Plan\n\nPlan:\n\n1. First step\n2. Second step\n`,
+		{
+			repo: "current-repo",
+			title: "Fallback title",
+			date: "2025-08-18",
+			forceDate: true,
+		},
+	);
+	assert.equal(normalized.frontmatter.repo, "current-repo");
+	assert.equal(normalized.frontmatter.title, "Agent supplied title");
+	assert.equal(normalized.frontmatter.date, "2025-08-18");
+	assert.equal(normalized.todos.length, 2);
+	assert.equal(parseFrontmatter(normalized.content).frontmatter.todos?.[1]?.text, "Second step");
+});
+
+await check("normalizePlanContent preserves extension-managed settings and todo completion on refinement", () => {
+	const normalized = normalizePlanContent("# Updated\n\nPlan:\n\n1. First step\n2. New second step\n", {
+		repo: "current-repo",
+		title: "Fallback title",
+		date: "2025-08-18",
+		previous: {
+			repo: "old-repo",
+			title: "Old title",
+			model: "anthropic/claude",
+			thinking: "high",
+			stepMode: "stop",
+			todos: [
+				{ step: 1, text: "First step", completed: true },
+				{ step: 2, text: "Old second step", completed: false },
+			],
+		},
+	});
+	assert.equal(normalized.frontmatter.repo, "current-repo");
+	assert.equal(normalized.frontmatter.title, "Updated");
+	assert.equal(normalized.frontmatter.model, "anthropic/claude");
+	assert.equal(normalized.frontmatter.thinking, "high");
+	assert.equal(normalized.frontmatter.stepMode, "stop");
+	assert.equal(normalized.todos[0]?.completed, true);
+	assert.equal(normalized.todos[1]?.completed, false);
 });
 
 // --- frontmatter todo sync -------------------------------------------------
