@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.0
+pi install git:github.com/arumie/pi-plan-mode@v1.0.1
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
