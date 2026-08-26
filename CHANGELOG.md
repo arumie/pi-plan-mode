@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.0.4] - 2026-08-26
+
+### Changed
+
+- Make **Start execution** the first option in the execution pre-flight panel, ahead of model, thinking-level, and step-gating settings.
+
 ## [1.0.3] - 2026-08-18
 
 ### Changed

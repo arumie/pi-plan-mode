@@ -757,6 +757,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				ctx,
 				title,
 				[
+					{ key: "start", label: "▶ Start execution", value: "start" },
 					{
 						key: "model",
 						label: `Model             ${modelLabel}`,
@@ -778,7 +779,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 								: "work through the remaining steps without stopping",
 						value: "step",
 					},
-					{ key: "start", label: "▶ Start execution", value: "start" },
 					{ key: "cancel", label: "Cancel", description: "stay in plan mode", value: "cancel" },
 				],
 				{ hint: "↑↓ navigate • enter change/start • esc cancel" },

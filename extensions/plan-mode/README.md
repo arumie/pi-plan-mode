@@ -63,10 +63,10 @@ Picking "Execute the plan" opens one screen describing *how* the plan will run:
 
 ```
 ┌─ Execute plan: Add frontmatter to plan files ─┐
+│ ▶ Start execution                             │
 │ Model             amazon-bedrock/…opus-5      │
 │ Thinking          high                        │
 │ After each step   keep going                  │
-│ ▶ Start execution                             │
 │ Cancel                                        │
 └───────────────────────────────────────────────┘
 ```
