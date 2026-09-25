@@ -9,7 +9,7 @@
 Install the latest release from its pinned Git tag:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.3
+pi install git:github.com/arumie/pi-plan-mode@v1.0.5
 ```
 
 Restart pi (or run `/reload`) after installing. Confirm the package is registered with `pi list`.
@@ -27,7 +27,7 @@ Do not run the package alongside the legacy auto-discovered extension at `~/.pi/
 - `/plan` — toggle read-only planning mode.
 - `/plan list [filter]` — load a saved plan or resume an unfinished one.
 - `/plan step [on|off|status]` — configure pausing after each execution step.
-- `save_plan` — agent tool that saves a named plan with a generated `YYYY-MM-DD-` filename and managed frontmatter.
+- `save_plan` — agent tool available in and out of plan mode that saves a named plan with a generated `YYYY-MM-DD-` filename and managed frontmatter.
 - `complete_plan_step` — execution-only agent tool that records the next completed step in order.
 - `/todos` — show the full current plan progress list.
 - `Ctrl+Alt+P` — toggle planning mode.
@@ -63,8 +63,8 @@ Git tags are the release mechanism:
 1. Update `package.json`'s version, `CHANGELOG.md`, and documentation.
 2. Run `npm run release:check`.
 3. Commit and push `main`.
-4. Create and push an annotated semantic-version tag, for example `v1.0.3`.
-5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.0.3`.
+4. Create and push an annotated semantic-version tag, for example `v1.0.5`.
+5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.0.5`.
 
 A Git ref in `pi install` is pinned. `pi update --extensions` reconciles the configured ref but does not advance it to a newer tag; install the new tag explicitly when upgrading. Remove the package with:
 

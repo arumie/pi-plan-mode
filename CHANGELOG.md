@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.0.5] - 2026-09-25
+
+### Changed
+
+- Keep `save_plan` available in normal mode as well as plan mode; saving outside plan mode does not alter active plan progress.
+
 ## [1.0.4] - 2026-08-26
 
 ### Changed

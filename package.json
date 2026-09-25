@@ -1,6 +1,6 @@
 {
   "name": "@arumie/pi-plan-mode",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "A read-only planning and guided execution mode extension for pi with tool-based step completion",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --experimental-strip-types extensions/plan-mode/utils.test.ts && node --experimental-strip-types test/package-manifest.test.ts",
+    "test": "node --experimental-strip-types extensions/plan-mode/utils.test.ts && node --experimental-strip-types test/package-manifest.test.ts && node --experimental-strip-types test/save-plan-tool.test.ts",
     "typecheck": "tsc --noEmit",
     "pack:check": "npm pack --dry-run",
     "release:check": "npm test && npm run typecheck && npm run pack:check"

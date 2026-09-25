@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.3
+pi install git:github.com/arumie/pi-plan-mode@v1.0.5
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -23,7 +23,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode in one screen
 - **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
 - **Step gating**: Optionally stop after each completed step and confirm before continuing (default: keep going)
-- **Agent plan-save tool**: `save_plan` accepts a plan name and markdown content, creates a dated file automatically, and normalizes its frontmatter
+- **Agent plan-save tool**: `save_plan` accepts a plan name and markdown content, creates a dated file automatically, and normalizes its frontmatter in plan mode and normal mode
 - **`repo`/`title`/`date` frontmatter**: Plan files get a `---` fenced frontmatter block backfilled automatically on save
 - **On-disk todo tracking**: The `todos` frontmatter is written as soon as the plan file is saved (not only when execution starts) and mirrored as steps complete, so a plan can be resumed from `/plan list` in a future session
 
@@ -38,6 +38,8 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - `Ctrl+Alt+P` - Toggle plan mode (shortcut)
 
 ## Usage
+
+`save_plan` is also available outside plan mode. It saves the plan without changing the session's current tool access or active execution progress.
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan

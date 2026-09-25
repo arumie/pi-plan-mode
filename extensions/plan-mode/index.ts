@@ -62,7 +62,7 @@ import {
 // Tools
 // write/edit stay active in plan mode but are gated to the plans directory.
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan"];
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
+const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "save_plan"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>();
 const PLAN_GATED_TOOLS = new Set<string>(["write", "edit"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
@@ -350,7 +350,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			content: Type.String({ description: "Complete markdown plan content, including its numbered Plan: section" }),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if (!planModeEnabled) throw new Error("save_plan is only available while plan mode is enabled.");
 			if (signal?.aborted) throw new Error("Plan save cancelled.");
 
 			const dir = planWriteDir();
@@ -373,13 +372,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					forceDate: true,
 				});
 				await writeFile(path, normalized.content, "utf8");
-				lastSavedPlanPath = path;
-				if (normalized.todos.length > 0) {
-					todoItems = normalized.todos;
-					activePlanPath = path;
-					updateStatus(ctx);
+				// Only attach the new file to in-flight Plan Mode tracking.
+				if (planModeEnabled) {
+					lastSavedPlanPath = path;
+					if (normalized.todos.length > 0) {
+						todoItems = normalized.todos;
+						activePlanPath = path;
+						updateStatus(ctx);
+					}
+					persistState();
 				}
-				persistState();
 
 				return {
 					content: [
