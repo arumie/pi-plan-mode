@@ -1,6 +1,6 @@
 {
   "name": "@arumie/pi-plan-mode",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "A read-only planning and guided execution mode extension for pi with tool-based step completion",
   "license": "MIT",
   "type": "module",

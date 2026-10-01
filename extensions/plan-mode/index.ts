@@ -18,7 +18,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { DynamicBorder, isToolCallEventType, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Key, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	buildModelPickerItems,
@@ -50,6 +50,7 @@ import {
 	stepModeLabel,
 	stringifyFrontmatter,
 	syncPlanTodosFromBody,
+	updatePlanContentInContent,
 	THINKING_LEVELS,
 	type ThinkingLevelName,
 	toDisplayPath,
@@ -61,9 +62,12 @@ import {
 
 // Tools
 // write/edit stay active in plan mode but are gated to the plans directory.
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan"];
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "save_plan"];
-const PLAN_MODE_DISABLED_TOOLS = new Set<string>();
+// Hashline's editing tools have no path argument for PLAN_GATED_TOOLS; hide them here
+// and also reject tool calls below in case another extension reactivates them.
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan", "update_plan"];
+const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "save_plan", "update_plan"];
+const PLAN_MODE_MUTATION_TOOLS = new Set<string>(["replace", "replace_within", "insert", "copy", "move", "undo_last_change"]);
+const PLAN_MODE_DISABLED_TOOLS = new Set<string>(PLAN_MODE_MUTATION_TOOLS);
 const PLAN_GATED_TOOLS = new Set<string>(["write", "edit"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
 
@@ -82,6 +86,7 @@ interface PlanModeState {
 	enabled: boolean;
 	todos?: TodoItem[];
 	executing?: boolean;
+	executionContext?: string;
 	toolsBeforePlanMode?: string[];
 	activePlanPath?: string;
 	stepMode?: StepMode;
@@ -112,7 +117,7 @@ function getTextContent(message: AssistantMessage): string {
  */
 function buildExecutionInstructions(mode: StepMode): string {
 	const completion =
-		"Work on ONE step at a time, in order. The moment you finish a step, call complete_plan_step with that step number before starting anything else. Do not wait until the whole plan is done, do not batch calls, and do not claim a step is complete without successfully calling the tool.";
+		"Work on ONE step at a time, in order. The moment you finish a step, call complete_plan_step with that step number before starting anything else. Do not wait until the whole plan is done, do not batch calls, and do not claim a step is complete without successfully calling the tool. If the scope or ordered steps need to change, call update_plan with the complete revised list of detailed steps first. If the saved plan's Context, Notes, or Results should change, use update_plan with the complete replacement for that section; omit sections that should remain unchanged.";
 
 	if (mode === "stop") {
 		return `${completion}
@@ -125,10 +130,16 @@ After complete_plan_step succeeds, STOP: end your turn there. Do not start the n
 After complete_plan_step succeeds, continue straight into the next remaining step without waiting for confirmation, until the plan is finished.`;
 }
 
+function formatExecutionContext(context: string): string {
+	const trimmed = context.trim();
+	return trimmed ? `Execution context for this run:\n${trimmed}\n\n` : "";
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
 	let executionMode = false;
 	let todoItems: TodoItem[] = [];
+	let executionContext = "";
 	let toolsBeforePlanMode: string[] | undefined;
 	// The plan file backing the currently executing plan, if any - kept in
 	// sync with the on-disk `todos` frontmatter as steps complete.
@@ -252,6 +263,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		pi.appendEntry("plan-mode", {
 			enabled: planModeEnabled,
 			todos: todoItems,
+			executionContext,
 			executing: executionMode,
 			toolsBeforePlanMode,
 			activePlanPath,
@@ -271,6 +283,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	async function endExecution(ctx: ExtensionContext): Promise<void> {
 		executionMode = false;
 		todoItems = [];
+		executionContext = "";
 		activePlanPath = undefined;
 		stepsCompletedThisRun = 0;
 
@@ -343,7 +356,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			"Save a completed plan in the configured plans directory. Supply a short name and the full markdown plan content; the tool adds the current date to the filename and manages frontmatter and todo tracking.",
 		promptSnippet: "Save a finished plan with a name and markdown content",
 		promptGuidelines: [
-			"Use save_plan, rather than write, to create a new plan after planning is complete. Supply the full plan body under a Plan: header; save_plan generates the dated filename and manages frontmatter."
+			"Use save_plan, rather than write, to create a new plan after planning is complete. Supply the full plan body under a Plan: header; save_plan generates the dated filename and manages frontmatter. After saving a draft, use update_plan to revise its steps or Context/Notes/Results sections; omitted fields stay unchanged."
 		],
 		parameters: Type.Object({
 			name: Type.String({ description: "Short descriptive plan name used for the generated filename" }),
@@ -403,6 +416,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	 */
 	pi.registerTool({
 		name: "complete_plan_step",
+		executionMode: "sequential",
 		label: "Complete Plan Step",
 		description:
 			"Mark the current plan step complete after its work is finished. Only use during plan execution, once per step, and always complete steps in order.",
@@ -462,6 +476,86 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+/**
+	 * Revises a saved plan's ordered steps and/or its Context, Notes, and Results
+	 * sections. The same tool supports planning after save_plan and execution.
+	 */
+	pi.registerTool({
+		name: "update_plan",
+		executionMode: "sequential",
+		label: "Update Plan",
+		description: "Edit a saved plan during planning or execution. Optionally provide the complete ordered steps and/or replacement text for its Context, Notes, and Results sections. Omitted fields remain unchanged.",
+		promptSnippet: "Revise the saved plan steps or its Context, Notes, and Results sections",
+		promptGuidelines: [
+			"During planning, save the draft with save_plan before using update_plan. During planning or execution, include steps only when changing the ordered plan and supply the complete revised list; unchanged completed steps retain their state.",
+			"Context, notes, and results replace the body of their matching Markdown sections; omitted fields remain unchanged, and missing sections are created. These are saved plan sections, distinct from the run-only execution context note.",
+		],
+		parameters: Type.Object({
+			steps: Type.Optional(Type.Array(Type.String({ minLength: 6 }), { minItems: 1, description: "Complete ordered list of detailed step descriptions; omit when steps do not change" })),
+			context: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Context section; empty text clears it" })),
+			notes: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Notes section; empty text clears it" })),
+			results: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Results section; empty text clears it" })),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (signal?.aborted) throw new Error("Plan update cancelled.");
+			if (!executionMode && !planModeEnabled) {
+				throw new Error("update_plan is only available while planning or executing a plan.");
+			}
+			if (params.steps === undefined && params.context === undefined && params.notes === undefined && params.results === undefined) {
+				throw new Error("Supply at least one of steps, context, notes, or results to update.");
+			}
+
+			const path = activePlanPath ?? (planModeEnabled ? lastSavedPlanPath : undefined);
+			if (planModeEnabled && !path) {
+				throw new Error("Save the draft with save_plan before using update_plan during planning.");
+			}
+			if (!path && (params.context !== undefined || params.notes !== undefined || params.results !== undefined)) {
+				throw new Error("Context, notes, and results can only be updated in a saved plan file.");
+			}
+
+			let updated: ReturnType<typeof updatePlanContentInContent>;
+			if (path) {
+				updated = await withFileMutationQueue(path, async () => {
+					const content = await readFile(path, "utf8");
+					const result = updatePlanContentInContent(content, params);
+					await writeFile(path, result.content, "utf8");
+					return result;
+				});
+			} else {
+				const fallback = stringifyFrontmatter({ todos: todoItems }) +
+					`Plan:\n\n${todoItems.map((item) => `${item.step}. ${item.text}`).join("\n")}\n`;
+				updated = updatePlanContentInContent(fallback, params);
+			}
+
+			if (path && planModeEnabled) {
+				activePlanPath = path;
+				lastSavedPlanPath = path;
+			}
+			if (params.steps !== undefined) {
+				todoItems = updated.todos;
+				updateStatus(ctx);
+			}
+			persistState();
+
+			const changed = [
+				...(params.steps !== undefined ? ["ordered steps"] : []),
+				...(params.context !== undefined ? ["Context"] : []),
+				...(params.notes !== undefined ? ["Notes"] : []),
+				...(params.results !== undefined ? ["Results"] : []),
+			];
+			const next = executionMode ? todoItems.find((item) => !item.completed) : undefined;
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Updated the saved plan (${changed.join(", ")}).${next ? `\nContinue with step ${next.step}: ${next.text}` : executionMode && params.steps !== undefined ? "\nAll plan steps are complete." : ""}`,
+					},
+				],
+				details: { todos: todoItems, path, updated: changed },
+			};
+		},
+	});
+
 	/**
 	 * Ensures there's an on-disk plan file backing the plan about to be
 	 * executed: reuses `lastSavedPlanPath` if the agent already wrote one this
@@ -508,7 +602,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		title: string,
 		rows: { key: string; label: string; description?: string; value: T }[],
-		opts?: { hint?: string; initialKey?: string },
+		opts?: { hint?: string; initialKey?: string; ctrlNKey?: string },
 	): Promise<T | null> {
 		if (rows.length === 0) return null;
 
@@ -546,6 +640,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					container.invalidate();
 				},
 				handleInput(data: string) {
+					if (opts?.ctrlNKey && matchesKey(data, Key.ctrl("n"))) {
+						done(opts.ctrlNKey);
+						return;
+					}
 					selectList.handleInput(data);
 					tui.requestRender();
 				},
@@ -704,6 +802,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			// on (or the plan's stored one), and pi clamps it on start.
 			thinking: stored.thinking ?? normalizeThinkingLevel(pi.getThinkingLevel()) ?? "off",
 			stepMode: stored.stepMode ?? stepMode,
+			executionContext: "",
 		};
 	}
 
@@ -731,11 +830,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		model: Model<Api> | undefined;
 		thinking: ThinkingLevelName;
 		stepMode: StepMode;
+		executionContext: string;
 	}
 
 	/**
 	 * Pre-flight panel shown before execution starts: one screen listing the model,
-	 * thinking level and step-gating mode, each row editable, plus start/cancel.
+	 * thinking level, step-gating mode and optional run-only context, each editable,
+	 * plus start/cancel.
 	 *
 	 * Implemented as a loop over `selectFromList` rather than a bespoke component,
 	 * so the row labels always re-render from the working copy after a change and
@@ -749,13 +850,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		let model = seed.model;
 		let thinking = seed.thinking;
 		let mode = seed.stepMode;
+		let context = seed.executionContext;
 
 		const title = seed.title ? `Execute plan: ${seed.title}` : "Execute plan";
 
 		while (true) {
 			const modelLabel = model ? formatModelRef(model.provider, model.id) : "(no model resolved)";
 			const pinned = scopedThinkingPin(ctx, model);
-			const action = await selectFromList<"model" | "thinking" | "step" | "start" | "cancel">(
+			const action = await selectFromList<"model" | "thinking" | "step" | "context" | "start" | "cancel">(
 				ctx,
 				title,
 				[
@@ -781,9 +883,15 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 								: "work through the remaining steps without stopping",
 						value: "step",
 					},
+					{
+						key: "context",
+						label: `Context           ${context.trim() ? "added" : "none"}`,
+						description: "add a run-only note for the agent; not saved in plan frontmatter",
+						value: "context",
+					},
 					{ key: "cancel", label: "Cancel", description: "stay in plan mode", value: "cancel" },
 				],
-				{ hint: "↑↓ navigate • enter change/start • esc cancel" },
+				{ hint: "↑↓ navigate • enter change/start • ctrl+n add context • esc cancel", ctrlNKey: "context" },
 			);
 
 			if (action === null || action === "cancel") return null;
@@ -811,7 +919,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				continue;
 			}
 
-			return { model, thinking, stepMode: mode };
+			if (action === "context") {
+				const edited = await ctx.ui.editor("Execution context for this run:", context);
+				if (edited !== undefined) context = edited;
+				continue;
+			}
+
+			return { model, thinking, stepMode: mode, executionContext: context };
 		}
 	}
 
@@ -952,6 +1066,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				executionMode = true;
 				planModeEnabled = false;
 				stepMode = settings.stepMode;
+				executionContext = settings.executionContext.trim();
 				stepsCompletedThisRun = 0;
 				restoreNormalModeTools();
 				await applyExecutionSettings(ctx, settings);
@@ -1114,6 +1229,16 @@ ${buildExecutionInstructions(stepMode)}`,
 	pi.on("tool_call", async (event) => {
 		if (!planModeEnabled) return;
 
+		if (PLAN_MODE_DISABLED_TOOLS.has(event.toolName)) {
+			const detail = PLAN_MODE_MUTATION_TOOLS.has(event.toolName)
+				? "this file-editing tool can bypass the plan-directory write guard"
+				: "this tool is disabled in plan mode";
+			return {
+				block: true,
+				reason: `Plan mode: ${event.toolName} is blocked because ${detail}. Use write/edit only for plan markdown under ${planWriteDir()}, or disable plan mode first.`,
+			};
+		}
+
 		if (event.toolName === "bash") {
 			const command = event.input.command as string;
 			const safety = checkCommandSafety(command);
@@ -1225,7 +1350,7 @@ ${buildExecutionInstructions(stepMode)}`,
 You are in plan mode - a read-only exploration mode for safe code analysis.
 
 Restrictions:
-- The only writes allowed are markdown plan files under ${planWriteDir()} (via the write/edit tools). Every other path is blocked.
+- The only writes allowed are markdown plan files under ${planWriteDir()} (via write/edit, save_plan, or update_plan). Every other path is blocked.
 - Other currently active tools remain available
 - Bash is restricted to read-only commands. Read-only research is allowed, including \`gh\` lookups (\`gh pr view/list/diff\`, \`gh issue view\`, \`gh api\` GETs, \`gh search\`, \`gh run list\`) and read-only \`git\` subcommands. Anything that writes, installs, builds or mutates remote state is blocked with a reason explaining why.
 
@@ -1233,6 +1358,7 @@ Ask clarifying questions using the questionnaire tool.
 Use brave-search skill via bash for web research.
 
 Create a detailed numbered plan under a "Plan:" header:
+Write detailed, useful descriptions in the Plan body; progress labels in frontmatter are shortened automatically and should not constrain the plan's actual descriptions.
 
 Plan:
 1. First step description
@@ -1240,7 +1366,7 @@ Plan:
 ...
 
 Do NOT attempt to make changes to the project - just describe what you would do.
-When the finished plan is ready to save, call the save_plan tool with a short descriptive name and the full markdown content. The tool creates ${planWriteDir()}/YYYY-MM-DD-task-summary.md automatically, supplies the current date, and backfills frontmatter. Do NOT use write to create a new plan file. You may use write/edit only to refine a plan that save_plan has already created. Keep a "Plan:" body (use that literal header text, e.g. "Plan:" or "## Plan" - either works - immediately followed by numbered steps). Do NOT include a "todos" field - progress tracking is managed automatically from that numbered list, so don't hand-maintain a separate checklist section.`,
+When the finished plan is ready to save, call the save_plan tool with a short descriptive name and the full markdown content. The tool creates ${planWriteDir()}/YYYY-MM-DD-task-summary.md automatically, supplies the current date, and backfills frontmatter. Do NOT use write to create a new plan file. After saving a draft, prefer update_plan to revise its complete ordered steps or its Context/Notes/Results sections; omitted fields stay unchanged, and missing sections are created. These saved Context/Notes/Results sections are distinct from the run-only execution context. You may use write/edit only to refine other content in a plan that save_plan has already created. Keep a "Plan:" body (use that literal header text, e.g. "Plan:" or "## Plan" - either works - immediately followed by numbered steps). Do NOT include a "todos" field - progress tracking is managed automatically from that numbered list, so don't hand-maintain a separate checklist section.`,
 					display: false,
 				},
 			};
@@ -1254,6 +1380,7 @@ When the finished plan is ready to save, call the save_plan tool with a short de
 					customType: "plan-execution-context",
 					content: `[EXECUTING PLAN - Full tool access enabled]
 
+${formatExecutionContext(executionContext)}
 Remaining steps:
 ${todoList}
 
@@ -1428,6 +1555,7 @@ ${buildExecutionInstructions(stepMode)}`,
 			planModeEnabled = false;
 			executionMode = true;
 			stepMode = settings.stepMode;
+			executionContext = settings.executionContext.trim();
 			stepsCompletedThisRun = 0;
 			restoreNormalModeTools();
 			await applyExecutionSettings(ctx, settings);
@@ -1488,19 +1616,25 @@ ${buildExecutionInstructions(stepMode)}`;
 			planModeEnabled = planModeEntry.data.enabled ?? planModeEnabled;
 			todoItems = planModeEntry.data.todos ?? todoItems;
 			executionMode = planModeEntry.data.executing ?? executionMode;
+			executionContext = planModeEntry.data.executionContext ?? executionContext;
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 			activePlanPath = planModeEntry.data.activePlanPath ?? activePlanPath;
 			stepMode = normalizeStepMode(planModeEntry.data.stepMode);
 			modelSnapshot = planModeEntry.data.modelSnapshot ?? modelSnapshot;
 		}
 
-		// On resume, on-disk todos are authoritative when available. If the file
-		// is unavailable, keep the session-persisted state; completion is never
-		// inferred from assistant text.
+		// On resume, the plan body supplies the full step descriptions and compact
+		// frontmatter supplies their completion flags. Fall back to the stored todo
+		// labels only for legacy plans without a recognizable Plan section.
 		if (planModeEntry !== undefined && executionMode && todoItems.length > 0 && activePlanPath) {
-			const onDisk = await readPlanFrontmatter(activePlanPath);
-			if (onDisk?.frontmatter.todos && onDisk.frontmatter.todos.length > 0) {
-				todoItems = onDisk.frontmatter.todos;
+			const onDiskTodos = await syncPlanTodosFromBody(activePlanPath);
+			if (onDiskTodos.length > 0) {
+				todoItems = onDiskTodos;
+			} else {
+				const onDisk = await readPlanFrontmatter(activePlanPath);
+				if (onDisk?.frontmatter.todos && onDisk.frontmatter.todos.length > 0) {
+					todoItems = onDisk.frontmatter.todos;
+				}
 			}
 		}
 

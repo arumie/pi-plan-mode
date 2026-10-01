@@ -4,6 +4,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
@@ -286,7 +287,8 @@ const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 function isValidTodoItem(value: unknown): value is TodoItem {
 	if (typeof value !== "object" || value === null) return false;
 	const v = value as Record<string, unknown>;
-	return typeof v.step === "number" && typeof v.text === "string" && typeof v.completed === "boolean";
+	return typeof v.step === "number" && typeof v.text === "string" && typeof v.completed === "boolean" &&
+		(v.textHash === undefined || (typeof v.textHash === "string" && /^[a-f0-9]{64}$/.test(v.textHash)));
 }
 
 function parseFrontmatterValue(key: string, rawValue: string): string | TodoItem[] | undefined {
@@ -454,12 +456,13 @@ export function normalizePlanContent(
 	frontmatter.todos ??= previous?.todos;
 
 	const bodyTodos = extractTodoItems(body);
-	if (bodyTodos.length > 0) frontmatter.todos = mergeTodoCompletion(bodyTodos, frontmatter.todos);
+	const runtimeTodos = bodyTodos.length > 0 ? mergeTodoCompletion(bodyTodos, frontmatter.todos) : (frontmatter.todos ?? []);
+	frontmatter.todos = compactTodoDescriptions(runtimeTodos);
 
 	return {
 		content: stringifyFrontmatter(frontmatter) + body,
 		frontmatter,
-		todos: frontmatter.todos ?? [],
+		todos: runtimeTodos,
 	};
 }
 
@@ -513,6 +516,17 @@ export async function readPlanFrontmatter(
 	}
 }
 
+function todoTextHash(text: string): string {
+	return createHash("sha256").update(text).digest("hex");
+}
+
+function compactTodoDescriptions(todos: TodoItem[]): TodoItem[] {
+	return todos.map((todo) => {
+		const text = shortenTodoDescription(todo.text);
+		return text === todo.text ? { ...todo } : { ...todo, text, textHash: todo.textHash ?? todoTextHash(todo.text) };
+	});
+}
+
 /**
  * Writes an updated `todos` list into a plan file's frontmatter, preserving
  * every other frontmatter field and the body unchanged. This is direct
@@ -526,7 +540,7 @@ export async function writePlanTodos(path: string, todos: TodoItem[]): Promise<b
 	const current = await readPlanFrontmatter(path);
 	if (!current) return false;
 	try {
-		const merged: PlanFrontmatter = { ...current.frontmatter, todos };
+		const merged: PlanFrontmatter = { ...current.frontmatter, todos: compactTodoDescriptions(todos) };
 		await writeFile(path, stringifyFrontmatter(merged) + current.body, "utf8");
 		return true;
 	} catch {
@@ -581,19 +595,16 @@ export async function readPlanExecutionSettings(path: string): Promise<PlanExecu
 export function mergeTodoCompletion(next: TodoItem[], previous: TodoItem[] | undefined): TodoItem[] {
 	if (!previous || previous.length === 0) return next;
 	return next.map((item) => {
+		const hash = todoTextHash(item.text);
+		const matchesFullText = (p: TodoItem): boolean =>
+			p.textHash !== undefined ? p.textHash === hash : p.text === item.text;
 		const match =
-			previous.find((p) => p.step === item.step && p.text === item.text) ??
-			previous.find((p) => p.text === item.text) ??
-			// Plans written before width-aware rendering stored a 70-character
-			// presentation label ending in `...`. Re-expand that legacy value from
-			// the body without losing its recorded completion state; a changed full
-			// description still does not match unless its saved prefix does.
-			previous.find(
-				(p) =>
-					p.step === item.step &&
-					p.text.endsWith("...") &&
-					item.text.startsWith(p.text.slice(0, -3)),
-			);
+			previous.find((p) => p.step === item.step && matchesFullText(p)) ??
+			previous.find(matchesFullText) ??
+			// Legacy compact labels have no identity. Only use a prefix at the same
+			// position; never transfer a colliding label's progress to another step.
+			previous.find((p) => p.textHash === undefined && p.step === item.step &&
+				p.text.endsWith("...") && item.text.startsWith(p.text.slice(0, -3)));
 		return match ? { ...item, completed: match.completed } : item;
 	});
 }
@@ -616,11 +627,181 @@ export async function syncPlanTodosFromBody(path: string): Promise<TodoItem[]> {
 	if (bodyTodos.length === 0) return current.frontmatter.todos ?? [];
 
 	const merged = mergeTodoCompletion(bodyTodos, current.frontmatter.todos);
-	const unchanged = JSON.stringify(merged) === JSON.stringify(current.frontmatter.todos ?? []);
+	const compact = compactTodoDescriptions(merged);
+	const unchanged = JSON.stringify(compact) === JSON.stringify(current.frontmatter.todos ?? []);
 	if (unchanged) return merged;
 
 	await writePlanTodos(path, merged);
 	return merged;
+}
+
+/**
+ * Replaces plan content supplied by the agent and refreshes compact progress
+ * frontmatter when the ordered steps change. Omitted context/notes/results are
+ * preserved; supplied values replace their matching Markdown section body.
+ */
+export function updatePlanContentInContent(
+	content: string,
+	updates: { steps?: string[]; context?: string; notes?: string; results?: string },
+): { content: string; todos: TodoItem[] } {
+	if (updates.steps === undefined && updates.context === undefined && updates.notes === undefined && updates.results === undefined) {
+		throw new Error("A plan update must include steps, context, notes, or results.");
+	}
+	const { frontmatter, body } = parseFrontmatter(content);
+	const lines = body.split(/\r?\n/);
+	const bodyTodos = extractTodoItems(body);
+	const previousTodos =
+		bodyTodos.length > 0 ? mergeTodoCompletion(bodyTodos, frontmatter.todos) : (frontmatter.todos ?? []);
+	let todos = previousTodos;
+	let updatedFrontmatter = frontmatter;
+
+	if (updates.steps !== undefined) {
+		const descriptions = updates.steps.map((step) => step.trim().replace(/\s+/g, " "));
+		if (descriptions.length === 0 || descriptions.some((step) => step.length === 0)) {
+			throw new Error("A plan update must contain at least one non-empty step description.");
+		}
+		const { sections, fenced } = scanPlanMarkdown(lines);
+		const section = findPlanSection(lines, sections, fenced);
+		if (!section) throw new Error('The saved plan has no "Plan:" section to update.');
+		const headerIndex = section.start;
+		const renderedSteps = descriptions.map((step, index) => `${index + 1}. ${step}`);
+		const nextTodos = extractTodoItems(`Plan:\n\n${renderedSteps.join("\n")}\n`);
+		if (nextTodos.length !== descriptions.length) throw new Error("A plan step is too short to track.");
+		let firstStep = -1;
+		let lastStep = -1;
+		let continuationAllowed = false;
+		for (let i = headerIndex + 1; i < section.end; i++) {
+			const line = lines[i] ?? "";
+			if (fenced[i]) continue;
+			if (/^ {0,3}\d+[.)]\s+/.test(line)) {
+				if (firstStep < 0) firstStep = i;
+				lastStep = i;
+				continuationAllowed = true;
+				continue;
+			}
+			if (line.trim().length === 0) continue;
+			if (firstStep >= 0 && continuationAllowed && /^\s/.test(line)) {
+				lastStep = i;
+				continue;
+			}
+			// Prose ends this step's continuation, not the complete ordered plan.
+			// Later numbered steps still belong to the replacement range.
+			continuationAllowed = false;
+		}
+		if (firstStep < 0) {
+			lines.splice(headerIndex + 1, 0, "", ...renderedSteps, "");
+		} else {
+			lines.splice(firstStep, lastStep - firstStep + 1, ...renderedSteps);
+		}
+		todos = mergeTodoCompletion(nextTodos, previousTodos);
+		updatedFrontmatter = { ...frontmatter, todos: compactTodoDescriptions(todos) };
+	}
+
+	for (const [key, title] of [["context", "Context"], ["notes", "Notes"], ["results", "Results"]] as const) {
+		const value = updates[key];
+		if (value !== undefined) updateNamedPlanSection(lines, title, value);
+	}
+
+	return { content: stringifyFrontmatter(updatedFrontmatter) + lines.join("\n"), todos };
+}
+
+const PLAN_CONTENT_SECTION_NAMES = new Set(["plan", "context", "notes", "results"]);
+
+interface MarkdownSection {
+	index: number;
+	level: number;
+	name?: string;
+}
+
+/** Find real headings and fence membership once, shared by extraction and updates. */
+function scanPlanMarkdown(lines: string[]): { sections: MarkdownSection[]; fenced: boolean[] } {
+	const sections: MarkdownSection[] = [];
+	const fenced: boolean[] = [];
+	let fence: { marker: string; length: number } | undefined;
+	for (const [index, line] of lines.entries()) {
+		const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+		if (fence) {
+			fenced[index] = true;
+			if (delimiter && delimiter[1]![0] === fence.marker && delimiter[1]!.length >= fence.length && !delimiter[2]!.trim()) {
+				fence = undefined;
+			}
+			continue;
+		}
+		if (delimiter && (delimiter[1]![0] !== "`" || !delimiter[2]!.includes("`"))) {
+			fence = { marker: delimiter[1]![0]!, length: delimiter[1]!.length };
+			fenced[index] = true;
+			continue;
+		}
+		fenced[index] = false;
+		const named = getNamedPlanSectionHeading(line);
+		const markdownLevel = line.match(/^ {0,3}(#{1,6})[ \t]+/)?.[1]?.length;
+		if (named || markdownLevel !== undefined) {
+			sections.push({ index, level: named?.level ?? markdownLevel!, name: named?.name });
+		}
+	}
+	return { sections, fenced };
+}
+
+function planSectionEnd(sections: MarkdownSection[], section: MarkdownSection, lineCount: number): number {
+	// Managed sections are always peers, even when their authored heading levels
+	// differ. Ordinary nested headings remain part of their enclosing section.
+	return sections.find((next) => next.index > section.index &&
+		(next.name !== undefined || next.level <= section.level))?.index ?? lineCount;
+}
+
+function findPlanSection(lines: string[], sections: MarkdownSection[], fenced: boolean[]): { start: number; end: number } | undefined {
+	const candidates = sections.filter((heading) => heading.name === "plan").map((section) => ({
+		start: section.index,
+		end: planSectionEnd(sections, section, lines.length),
+	}));
+	// A document title such as "# Plan" can precede the actual "Plan:" section.
+	return candidates.find((section) => lines.some((line, index) =>
+		index > section.start && index < section.end && !fenced[index] && /^ {0,3}\d+[.)]\s+/.test(line))) ?? candidates.at(-1);
+}
+
+/**
+ * Updates one Context/Notes/Results section, creating a level-two Markdown
+ * heading when absent. Only real headings can delimit or identify sections.
+ */
+function updateNamedPlanSection(lines: string[], title: string, value: string): void {
+	const { sections } = scanPlanMarkdown(lines);
+	const matchingSections = sections.filter((heading) => heading.name === title.toLowerCase());
+	if (matchingSections.length > 1) throw new Error(`The plan has multiple "${title}" sections; keep only one before updating it.`);
+	const replacement = value.trim().length > 0 ? value.trim().split(/\r?\n/) : [];
+	if (matchingSections.length === 0) {
+		while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+		if (lines.length > 0) lines.push("");
+		lines.push(`## ${title}`, "", ...replacement, "");
+		return;
+	}
+
+	const section = matchingSections[0]!;
+	const sectionEnd = planSectionEnd(sections, section, lines.length);
+	lines.splice(section.index + 1, sectionEnd - section.index - 1, "", ...replacement, "");
+}
+
+function getNamedPlanSectionHeading(line: string): { name: string; level: number } | undefined {
+	const normalize = (value: string): string => value.trim().replace(/^\*\*|\*\*$/g, "").trim().replace(/:$/, "").trim().toLowerCase();
+	const markdown = line.match(/^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$/);
+	if (markdown) {
+		const name = normalize(markdown[2] ?? "");
+		if (PLAN_CONTENT_SECTION_NAMES.has(name)) return { name, level: (markdown[1] ?? "##").length };
+	}
+	// Preserve all previously supported Plan header styles, including a bare Plan.
+	const plan = line.match(/^[ \t]{0,3}(#{0,6})[ \t]*\*{0,2}Plan:?\*{0,2}[ \t]*$/i);
+	if (plan) return { name: "plan", level: plan[1]?.length || 2 };
+	const plainLabel = line.trim().replace(/^\*\*|\*\*$/g, "").trim();
+	const plainName = normalize(line);
+	if (plainLabel.endsWith(":") && PLAN_CONTENT_SECTION_NAMES.has(plainName)) return { name: plainName, level: 2 };
+	return undefined;
+}
+
+/** Backward-compatible steps-only helper used by plan update tests/callers. */
+export function updatePlanStepsInContent(
+	content: string,
+	stepDescriptions: string[],
+): { content: string; todos: TodoItem[] } {
+	return updatePlanContentInContent(content, { steps: stepDescriptions });
 }
 
 /**
@@ -1193,13 +1374,26 @@ export interface TodoItem {
 	step: number;
 	text: string;
 	completed: boolean;
+	/** Identity of the full description when `text` is a compact persisted label. */
+	textHash?: string;
 }
 
+/** Maximum length of a frontmatter todo label; plan-body descriptions stay untouched. */
+export const TODO_DESCRIPTION_MAX_LENGTH = 100;
+
 /**
- * Normalizes a plan step for durable storage and execution context. Rendering
- * applies its own width-aware truncation, so this must retain the full cleaned
- * description rather than imposing a presentation-length limit.
+ * Keeps the plan body as the detailed source of truth while making the
+ * extension-managed progress labels easier to scan in frontmatter and widgets.
  */
+export function shortenTodoDescription(text: string, maxLength = TODO_DESCRIPTION_MAX_LENGTH): string {
+	if (text.length <= maxLength) return text;
+	const contentLimit = Math.max(1, maxLength - 3);
+	const boundary = text.lastIndexOf(" ", contentLimit);
+	const cutoff = boundary >= Math.floor(contentLimit * 0.65) ? boundary : contentLimit;
+	return `${text.slice(0, cutoff).trimEnd()}...`;
+}
+
+
 export function cleanStepText(text: string): string {
 	let cleaned = text
 		.replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // Remove bold/italic
@@ -1227,24 +1421,27 @@ export function cleanStepText(text: string): string {
  */
 export function extractTodoItems(message: string): TodoItem[] {
 	const items: TodoItem[] = [];
-	const headerMatch = message.match(/^[ \t]{0,3}#{0,6}[ \t]*\*{0,2}Plan:?\*{0,2}[ \t]*\r?\n/im);
-	if (!headerMatch) return items;
-
-	const planSection = message.slice(message.indexOf(headerMatch[0]) + headerMatch[0].length);
+	const lines = message.split(/\r?\n/);
+	const { sections, fenced } = scanPlanMarkdown(lines);
+	const section = findPlanSection(lines, sections, fenced);
+	if (!section) return items;
 
 	let current: string | null = null;
 	const flush = (): void => {
 		if (current === null) return;
-		const raw = current.trim().replace(/\*{1,2}$/, "").trim();
+		const cleaned = cleanStepText(current);
 		current = null;
-		if (raw.length <= 5 || raw.startsWith("`") || raw.startsWith("/") || raw.startsWith("-")) return;
-		const cleaned = cleanStepText(raw);
 		if (cleaned.length > 3) {
 			items.push({ step: items.length + 1, text: cleaned, completed: false });
 		}
 	};
 
-	for (const line of planSection.split(/\r?\n/)) {
+	for (let index = section.start + 1; index < section.end; index++) {
+		if (fenced[index]) {
+			flush();
+			continue;
+		}
+		const line = lines[index]!;
 		// A top-level numbered item starts a new step (deeper indentation is
 		// treated as continuation of the current one).
 		const numbered = line.match(/^ {0,3}(\d+)[.)]\s+(.*)$/);
@@ -1255,14 +1452,12 @@ export function extractTodoItems(message: string): TodoItem[] {
 		}
 		if (current === null) continue;
 		if (line.trim().length === 0 || !/^\s/.test(line)) {
-			// Blank line or an unindented line (prose, heading, ...) ends the step.
 			flush();
 			continue;
 		}
 		current += ` ${line.trim().replace(/^[-*]\s*/, "")}`;
 	}
 	flush();
-
 	return items;
 }
 

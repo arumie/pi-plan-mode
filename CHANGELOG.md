@@ -2,6 +2,27 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.1.0] - 2026-10-01
+
+### Added
+
+- Add `update_plan` for revising saved plan steps and Context/Notes/Results sections during planning or execution.
+- Add an optional run-only execution context note to the pre-flight menu, accessible with `Ctrl+N`.
+
+### Changed
+
+- Store concise todo labels in plan frontmatter while retaining full step descriptions in the plan body and execution context.
+- Hide and block hashline mutation tools during plan mode while retaining its read and search tools.
+
+### Fixed
+
+- Preserve distinct completion flags for long steps with identical compact labels by persisting full-description hashes.
+- Keep saved section checklists out of execution steps and ignore fenced code headings when extracting or updating sections.
+- Use the same step extraction and validation for plan updates and reloads, including inline-code and command descriptions.
+- Replace all old ordered steps even when explanatory prose separates them, without leaving stale steps to reappear on reload.
+- Treat Plan/Context/Notes/Results as peer sections regardless of heading depth so section updates cannot delete another managed section.
+- Preserve existing completion flags when revising a session-only plan without a backing file.
+
 ## [1.0.5] - 2026-09-25
 
 ### Changed

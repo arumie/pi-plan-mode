@@ -28,6 +28,8 @@ import {
 	syncPlanTodosFromBody,
 	THINKING_LEVELS,
 	type TodoItem,
+	updatePlanContentInContent,
+	updatePlanStepsInContent,
 	writePlanExecutionSettings,
 	writePlanTodos,
 } from "./utils.ts";
@@ -165,11 +167,13 @@ Not a step.
 
 await check("extractTodoItems retains complete normalized long step descriptions", () => {
 	const longStep =
-		"Implement the width-responsive plan widget without losing the complete durable description stored in frontmatter for execution and resume flows.";
-	const items = extractTodoItems(`Plan:\n\n1. ${longStep}\n`);
+		"Implement the width-responsive plan widget without losing the complete durable description stored in frontmatter and execution context.";
+	const body = `Plan:\n\n1. ${longStep}\n`;
+	const items = extractTodoItems(body);
 	assert.equal(items.length, 1);
 	assert.equal(items[0]?.text, longStep.slice(0, -1));
-	assert.ok((items[0]?.text.length ?? 0) > 70, "long descriptions must not be capped for storage");
+	assert.ok((items[0]?.text.length ?? 0) > 100, "runtime plan descriptions remain complete");
+	assert.ok(body.includes(longStep), "the plan body retains its complete description");
 });
 
 await check("extractTodoItems accepts a markdown '## Plan' heading (no colon)", () => {
@@ -244,6 +248,167 @@ await check("normalizePlanContent preserves extension-managed settings and todo 
 	assert.equal(normalized.todos[1]?.completed, false);
 });
 
+await check("updatePlanStepsInContent rewrites detailed body steps and stores compact todo summaries", () => {
+	const previous = `---\ntitle: Example\ntodos: [{"step":1,"text":"First detailed step description","completed":true},{"step":2,"text":"Old second step description","completed":false}]\n---\n\n# Example\n\nPlan:\n\n1. First detailed step description\n\n   - stale subtask detail\n2. Old second step description\n\n## Notes\nKeep these notes.`;
+	const updatedFirst = "First detailed step description";
+	const updatedSecond = "Replace the old second step with a concise but sufficiently descriptive step that will be shortened only in progress frontmatter.";
+	const updated = updatePlanStepsInContent(previous, [updatedFirst, updatedSecond]);
+	const parsed = parseFrontmatter(updated.content);
+	assert.deepEqual(updated.todos.map((todo) => todo.completed), [true, false]);
+	assert.ok(parsed.body.includes(`1. ${updatedFirst}`), "the full first description remains in the plan body");
+	assert.ok(parsed.body.includes(`2. ${updatedSecond}`), "the full second description remains in the plan body");
+	assert.ok(parsed.body.includes("## Notes\nKeep these notes."), "content outside the Plan list is preserved");
+	assert.ok(!parsed.body.includes("stale subtask detail"), "the entire previous numbered list is replaced");
+	assert.ok((parsed.frontmatter.todos?.[1]?.text.length ?? 0) <= 100);
+	assert.notEqual(parsed.frontmatter.todos?.[1]?.text, updatedSecond);
+	const reordered = updatePlanStepsInContent(previous, ["Old second step description", updatedFirst]);
+	assert.deepEqual(reordered.todos.map((todo) => todo.completed), [false, true], "completion follows unchanged step descriptions when reordered");
+});
+
+await check("step revisions replace all old steps separated by explanatory prose", async () => {
+	const previous = `## Context\nKeep this context.\n\nPlan:\n\nIntroduction to the plan.\n\n1. Prepare original feature implementation\n\nAdditional details for the first step.\n\n2. Verify original feature implementation\n   - obsolete validation detail\n\nFinal explanation.\n\n## Notes\n1. Keep this reference checklist\n`;
+	const updated = updatePlanStepsInContent(previous, ["Implement replacement feature", "Verify replacement feature"]);
+	const body = parseFrontmatter(updated.content).body;
+	assert.deepEqual(extractTodoItems(body), updated.todos, "runtime and reload contain exactly the revised steps");
+	assert.ok(!body.includes("original feature implementation"), "no old numbered steps remain");
+	assert.ok(!body.includes("obsolete validation detail"), "old continuation lines are removed");
+	assert.ok(body.includes("Introduction to the plan."), "prose before the ordered steps is preserved");
+	assert.ok(body.includes("Final explanation."), "prose after the ordered steps is preserved");
+	assert.ok(body.includes("## Context\nKeep this context."));
+	assert.ok(body.includes("## Notes\n1. Keep this reference checklist"));
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-prose-steps-"));
+	const path = join(dir, "plan.md");
+	await writeFile(path, updated.content);
+	assert.deepEqual(await syncPlanTodosFromBody(path), updated.todos);
+	const revisedAgain = updatePlanStepsInContent(updated.content, ["Only the final replacement step"]);
+	assert.deepEqual(extractTodoItems(parseFrontmatter(revisedAgain.content).body), revisedAgain.todos);
+	assert.equal(revisedAgain.todos.length, 1, "shortening the ordered plan removes all former steps");
+});
+
+await check("managed sections are peers regardless of Markdown heading depth", () => {
+	for (const contextHeader of ["# Context", "## Context", "Context:", "**Context:**"]) {
+		for (const planHeader of ["Plan:", "**Plan:**", "# Plan", "## Plan", "### Plan"]) {
+			const original = `${contextHeader}\nOld context.\n\n${planHeader}\n\n1. Implement actual feature\n\n#### Notes\nOriginal notes.\n\n##### Results\nOriginal results.\n`;
+			const contextUpdated = updatePlanContentInContent(original, { context: "Updated background" });
+			const body = parseFrontmatter(contextUpdated.content).body;
+			assert.ok(body.includes(`${planHeader}\n\n1. Implement actual feature`), "updating Context preserves the Plan");
+			assert.ok(body.includes("#### Notes\nOriginal notes."), "omitted Notes stays unchanged");
+			assert.ok(body.includes("##### Results\nOriginal results."), "omitted Results stays unchanged");
+			assert.deepEqual(extractTodoItems(body), contextUpdated.todos);
+			const notesUpdated = updatePlanContentInContent(contextUpdated.content, { notes: "Updated notes" });
+			assert.ok(notesUpdated.content.includes("##### Results\nOriginal results."), "updating Notes cannot consume deeper Results");
+			const resultsUpdated = updatePlanContentInContent(notesUpdated.content, { results: "Updated results" });
+			assert.ok(resultsUpdated.content.includes("#### Notes\n\nUpdated notes"));
+			assert.deepEqual(extractTodoItems(parseFrontmatter(resultsUpdated.content).body), contextUpdated.todos);
+		}
+	}
+});
+
+await check("updatePlanContentInContent replaces only supplied Context/Notes/Results sections", () => {
+	const previous = `---\ntitle: Example\ntodos: [{"step":1,"text":"First detailed step description","completed":true}]\n---\n\n# Example\n\n## Context\nOld context.\n\n## Notes\nOld notes.\n\n### Nested note\nRemove this with the Notes replacement.\n\n## Results\nOld results.\n\n## Other\nPreserve this section.`;
+	const updated = updatePlanContentInContent(previous, { notes: "Revised notes.\nAdditional detail.", results: "Verified behavior." });
+	const parsed = parseFrontmatter(updated.content);
+	assert.ok(parsed.body.includes("## Context\nOld context."), "omitted Context remains unchanged");
+	assert.ok(parsed.body.includes("## Notes\n\nRevised notes.\nAdditional detail."));
+	assert.ok(!parsed.body.includes("Nested note"), "nested content within the replaced section is replaced too");
+	assert.ok(parsed.body.includes("## Results\n\nVerified behavior."));
+	assert.ok(parsed.body.includes("## Other\nPreserve this section."), "unrelated sections remain unchanged");
+	assert.deepEqual(updated.todos.map((todo) => todo.completed), [true]);
+	assert.equal(parsed.frontmatter.todos?.[0]?.completed, true);
+	const revisedAgain = updatePlanContentInContent(updated.content, { context: "Added later." });
+	assert.ok(parseFrontmatter(revisedAgain.content).body.includes("## Context\n\nAdded later."));
+	assert.ok(revisedAgain.content.includes("Revised notes."), "omitted section fields remain unchanged");
+	const appended = updatePlanContentInContent("Plan:\n\n1. Preserve this complete plan step.\n", { context: "Fresh context." });
+	assert.ok(parseFrontmatter(appended.content).body.includes("## Context\n\nFresh context."), "missing sections are added as level-two headings");
+	assert.ok(appended.content.includes("1. Preserve this complete plan step."), "adding a section preserves the Plan list");
+	const cleared = updatePlanContentInContent(updated.content, { notes: "" });
+	assert.ok(!cleared.content.includes("Revised notes."), "an empty section value clears that section");
+	assert.throws(() => updatePlanContentInContent(previous, {}), /must include steps, context, notes, or results/);
+	assert.throws(() => updatePlanContentInContent(`${previous}\n\n## Notes\nDuplicate.`, { notes: "A" }), /multiple/);
+});
+await check("compact labels retain distinct step identities across reload and reordering", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-identities-"));
+	const path = join(dir, "plan.md");
+	const prefix = "Implement the shared persistence and validation workflow across the service and verify all acceptance tests for ";
+	const steps = [prefix + "customer records", prefix + "business records"];
+	const normalized = normalizePlanContent(`Plan:\n\n1. ${steps[0]}\n2. ${steps[1]}\n`, { repo: "repo", title: "Plan", date: "2026-01-01" });
+	await writeFile(path, normalized.content);
+	const todos = normalized.todos;
+	todos[0]!.completed = true;
+	await writePlanTodos(path, todos);
+	assert.equal(parseFrontmatter(await readFile(path, "utf8")).frontmatter.todos?.[0]?.text,
+		parseFrontmatter(await readFile(path, "utf8")).frontmatter.todos?.[1]?.text, "labels deliberately collide");
+	assert.deepEqual((await syncPlanTodosFromBody(path)).map((todo) => todo.completed), [true, false]);
+	const saved = parseFrontmatter(await readFile(path, "utf8"));
+	saved.frontmatter.todos = saved.frontmatter.todos!.map(({ textHash: _hash, ...todo }) => todo);
+	await writeFile(path, stringifyFrontmatter(saved.frontmatter) + saved.body);
+	assert.deepEqual((await syncPlanTodosFromBody(path)).map((todo) => todo.completed), [true, false], "legacy colliding labels retain progress by position");
+	assert.ok(parseFrontmatter(await readFile(path, "utf8")).frontmatter.todos!.every((todo) => todo.textHash), "legacy compact labels gain full-description identities");
+	const reordered = updatePlanStepsInContent(await readFile(path, "utf8"), [steps[1]!, steps[0]!]);
+	await writeFile(path, reordered.content);
+	assert.deepEqual((await syncPlanTodosFromBody(path)).map((todo) => todo.completed), [false, true]);
+	const revised = updatePlanStepsInContent(await readFile(path, "utf8"), [steps[1]!, prefix + "new customer requirements"]);
+	assert.deepEqual(revised.todos.map((todo) => todo.completed), [false, false], "changing only the truncated suffix resets completion");
+	// Manual body edits must also reset progress when the saved identity differs.
+	await writeFile(path, reordered.content.replace(steps[0]!, prefix + "new customer requirements"));
+	assert.deepEqual((await syncPlanTodosFromBody(path)).map((todo) => todo.completed), [false, false]);
+});
+
+await check("saved section checklists never become execution steps on reload", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-sections-"));
+	const path = join(dir, "plan.md");
+	for (const header of ["Plan:", "# Plan", "## Plan", "### Plan", "**Plan:**"]) {
+		const updated = updatePlanContentInContent(`${header}\n\n1. Implement the real feature\n`, {
+			notes: "Verification checklist:\n\n1. Check deployment logs\n2. Check operational metrics",
+			results: "1. Deployment succeeded",
+		});
+		await writeFile(path, updated.content);
+		assert.deepEqual(await syncPlanTodosFromBody(path), updated.todos);
+		assert.deepEqual(extractTodoItems(parseFrontmatter(updated.content).body), updated.todos);
+	}
+});
+
+await check("section and step updates ignore headings and lists inside code fences", () => {
+	for (const fence of ["```", "~~~~"]) {
+		const example = `${fence}markdown\n## Notes\nOld example\nPlan:\n1. Example step only\n${fence}`;
+		const content = `## Context\nExample:\n${example}\n\nPlan:\n\n1. Implement actual feature\n\n## Results\nPending\n`;
+		const notes = updatePlanContentInContent(content, { notes: "New notes" });
+		assert.ok(notes.content.includes(example), "the entire fenced example is preserved");
+		assert.ok(notes.content.includes("## Notes\n\nNew notes"));
+		assert.deepEqual(extractTodoItems(parseFrontmatter(notes.content).body).map((todo) => todo.text), ["Implement actual feature"]);
+		const steps = updatePlanStepsInContent(notes.content, ["Implement revised feature"]);
+		assert.ok(steps.content.includes(example), "step updates find the real Plan section");
+		assert.deepEqual(extractTodoItems(parseFrontmatter(steps.content).body), steps.todos);
+		const nested = `## Notes\nBefore example.\n${fence}markdown\n## Results\nExample output\n${fence}\nAfter example.\n\nPlan:\n\n1. Implement actual feature\n`;
+		const replaced = updatePlanContentInContent(nested, { notes: "Replacement notes" });
+		assert.ok(!replaced.content.includes("Example output"), "a fenced heading cannot end the enclosing section");
+		assert.ok(replaced.content.includes("1. Implement actual feature"));
+	}
+});
+
+await check("updated command and inline-code steps round-trip through the shared extractor", async () => {
+	const descriptions = ["`npm test`", "/run-tests", "- inspect the output", "**Verify results**"];
+	const updated = updatePlanStepsInContent("Plan:\n\n1. Previous tracked step\n", descriptions);
+	assert.equal(updated.todos.length, descriptions.length);
+	assert.deepEqual(extractTodoItems(parseFrontmatter(updated.content).body), updated.todos);
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-command-steps-"));
+	const path = join(dir, "plan.md");
+	await writeFile(path, updated.content);
+	assert.deepEqual(await syncPlanTodosFromBody(path), updated.todos);
+	assert.throws(() => updatePlanStepsInContent(updated.content, ["**...**"]), /too short|track/);
+});
+
+// --- compact frontmatter todo labels ---------------------------------------
+
+await check("normalizePlanContent stores concise frontmatter todos but preserves full plan descriptions", () => {
+	const detailed = "Implement the persistence path and verify that every plan update retains all of its original implementation details.";
+	const normalized = normalizePlanContent(`Plan:\n\n1. ${detailed}\n`, { repo: "repo", title: "Plan", date: "2026-01-01" });
+	const parsed = parseFrontmatter(normalized.content);
+	assert.equal(normalized.todos[0]?.text, detailed.slice(0, -1));
+	assert.ok((parsed.frontmatter.todos?.[0]?.text.length ?? 0) <= 100);
+	assert.ok(parsed.frontmatter.todos?.[0]?.text.endsWith("..."));
+	assert.ok(parsed.body.includes(detailed), "only frontmatter todo labels are shortened");
+});
 // --- frontmatter todo sync -------------------------------------------------
 
 await check("syncPlanTodosFromBody stamps todos and preserves completion", async () => {
@@ -286,9 +451,9 @@ Plan:
 	assert.deepEqual(await syncPlanTodosFromBody(path), []);
 });
 
-await check("syncPlanTodosFromBody upgrades legacy truncated descriptions without resetting completion", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "plan-mode-legacy-todo-"));
-	const path = join(dir, "2026-08-18-legacy.md");
+await check("syncPlanTodosFromBody preserves runtime descriptions and compact frontmatter progress", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "plan-mode-compact-todo-"));
+	const path = join(dir, "2026-08-18-compact.md");
 	const full =
 		"Preserve the entire normalized plan step description in durable frontmatter while rendering it responsively in the widget";
 	const legacy = `${full.slice(0, 67)}...`;
@@ -300,7 +465,10 @@ await check("syncPlanTodosFromBody upgrades legacy truncated descriptions withou
 
 	const synced = await syncPlanTodosFromBody(path);
 	assert.deepEqual(synced, [{ step: 1, text: full, completed: true }]);
-	assert.deepEqual(parseFrontmatter(await readFile(path, "utf8")).frontmatter.todos, synced);
+	const stored = parseFrontmatter(await readFile(path, "utf8"));
+	assert.equal(stored.frontmatter.todos?.[0]?.completed, true);
+	assert.ok((stored.frontmatter.todos?.[0]?.text.length ?? 0) <= 100);
+	assert.ok(stored.body.includes(`1. ${full}`));
 });
 
 // --- execution settings: model refs & step mode ----------------------------

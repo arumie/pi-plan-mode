@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.0.5
+pi install git:github.com/arumie/pi-plan-mode@v1.1.0
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -16,23 +16,23 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 
 - **Writes limited to plans dir**: Only markdown files under `~/.pi/plans/` (override with `PI_PLAN_DIR`) can be written/edited; all other paths are blocked
 - **Bash allowlist**: Only read-only bash commands are allowed, checked structurally (quote-aware) so read-only research like `gh pr view` and `rg -ln "a|b"` works
-- **Plan extraction**: Extracts numbered steps from `Plan:` sections, folding multi-line steps into one label
-- **Progress tracking**: A compact, width-responsive widget shows progress during execution - completed steps collapse into one summary line, the current step is highlighted, and the tail is summarized as `+N more` while each full saved description is ellipsized only to fit the current terminal width (see [Progress widget](#progress-widget))
-- **Step-completion tool**: `complete_plan_step` explicitly records each completed step
+- **Plan extraction**: Extracts numbered steps only from the `Plan:` section, excluding fenced examples and subsequent Context/Notes/Results lists, and folding multi-line steps into one label
+- **Progress tracking**: A compact, width-responsive widget tracks ordered steps while the detailed descriptions remain in the plan body; frontmatter stores concise labels (see [Progress widget](#progress-widget))
+- **Plan and execution tools**: `complete_plan_step` records execution progress; `update_plan` is available during planning (after `save_plan`) and execution to revise ordered steps or saved Context, Notes, and Results sections
 - **Session persistence**: State survives session resume
-- **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode in one screen
+- **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode, and optionally add run-only context
 - **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
 - **Step gating**: Optionally stop after each completed step and confirm before continuing (default: keep going)
 - **Agent plan-save tool**: `save_plan` accepts a plan name and markdown content, creates a dated file automatically, and normalizes its frontmatter in plan mode and normal mode
 - **`repo`/`title`/`date` frontmatter**: Plan files get a `---` fenced frontmatter block backfilled automatically on save
-- **On-disk todo tracking**: The `todos` frontmatter is written as soon as the plan file is saved (not only when execution starts) and mirrored as steps complete, so a plan can be resumed from `/plan list` in a future session
+- **On-disk todo tracking**: The `todos` frontmatter is written as soon as the plan file is saved and mirrored as steps complete or the plan is revised, so a plan can be resumed from `/plan list` in a future session
 
 ## Commands
 
 - `/plan` - Toggle plan mode
 - `/plan step [on|off|status]` - Control whether execution stops after each completed step. `on` stops, `off` keeps going (the default), bare `/plan step` toggles, `status` just reports. Works mid-execution and is persisted to the active plan file.
 - `/plan list [filter]` - Pick a previously saved plan (from `~/.pi/plans/`, or `$PI_PLAN_DIR`). Each entry shows its filename with `title · repo · date` faded underneath (falling back to the first markdown heading / filename-derived values for plans saved before this feature existed). Optional `filter` narrows the list by filename, title, repo, or date substring.
-  - If the selected plan has unfinished `todos` in its frontmatter, you're prompted to **resume execution** (opens the same pre-flight panel, pre-seeded with the model/thinking/step mode that plan last ran with, then restores full tool access and continues from the first incomplete step) or **load as reference only** (injects the file's contents as context, same as before).
+  - If the selected plan has unfinished `todos` in its frontmatter, you're prompted to **resume execution** (opens the same pre-flight panel, pre-seeded with the model/thinking/step mode that plan last ran with; you can add run-only context before continuing from the first incomplete step) or **load as reference only** (injects the file's contents as context, same as before).
   - Otherwise, the plan is loaded as reference only, unchanged from before.
 - `/todos` - Show the **full** plan todo list (every step with `✓`/`○`, plus an `X/Y complete` header, the step-gating mode and the active model). The widget is a compact view; this is the authoritative one.
 - `Ctrl+Alt+P` - Toggle plan mode (shortcut)
@@ -53,8 +53,8 @@ Plan:
 3. Third step description
 ```
 
-4. Choose "Execute the plan" when prompted, then confirm (or change) the model, thinking level and step-gating mode in the pre-flight panel
-5. During execution, the agent calls `complete_plan_step` after finishing each step
+4. Choose "Execute the plan" when prompted, then confirm (or change) the model, thinking level and step-gating mode; select **Context** or press `Ctrl+N` to add a note for this execution only
+5. After saving a draft, `update_plan` can revise its steps or Context/Notes/Results; during execution, the agent calls `complete_plan_step` after each finished step and can revise the plan with `update_plan` if needed
 6. Progress widget shows completion status and the current step-gating mode (compact - see [Progress widget](#progress-widget); `/todos` prints the full list)
 
 At step 4, if the plan was never saved to disk during planning, the extension auto-saves it to `~/.pi/plans/` (or `$PI_PLAN_DIR`) so execution always has a durable, resumable home from the start.
@@ -69,6 +69,7 @@ Picking "Execute the plan" opens one screen describing *how* the plan will run:
 │ Model             amazon-bedrock/…opus-5      │
 │ Thinking          high                        │
 │ After each step   keep going                  │
+│ Context           none                        │
 │ Cancel                                        │
 └───────────────────────────────────────────────┘
 ```
@@ -77,6 +78,7 @@ Picking "Execute the plan" opens one screen describing *how* the plan will run:
 - **Thinking** offers pi's canonical level list (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) for every model. Plan mode deliberately does **no** capability filtering of its own: `pi.setThinkingLevel()` already clamps to what the model supports (a non-reasoning model resolves to `off`), so deriving a per-model subset from `reasoning`/`thinkingLevelMap` here could only drift from pi's rule. `xhigh` and `max` are therefore labelled `may be clamped down by the model` rather than hidden, and the level is never silently downgraded when you switch model. A level pinned by a scoped-model pattern (e.g. `anthropic/*:high`) is preferred for a freshly picked model and labelled. The **effective** level is read back from `pi.getThinkingLevel()` after applying, and that value - not the requested one - is what the start notice reports and what lands in the `thinking` frontmatter field; if the model clamped your choice, the notice says so (`thinking: high (requested xhigh, clamped by the model)`).
 - **After each step** toggles step gating (see below).
 - **Start execution** begins; **Cancel** / `Esc` leaves you in plan mode with the plan file already saved, so nothing is lost. `Esc` inside a sub-picker keeps the previous value.
+- **Context** opens a multiline editor for a run-only note. Press `Ctrl+N` from anywhere in the pre-flight list to jump directly to it; the note is supplied to the agent during this execution, survives that session's continuation/resume, and is not saved to the plan file.
 - Headless runs (print/RPC, `ctx.hasUI === false`) skip the panel entirely and execute with the session's current model and the default "keep going" mode.
 
 The choices are applied with `pi.setModel()` / `pi.setThinkingLevel()`. Those also rewrite pi's **global defaults**, so the extension snapshots the previous model/level first and restores it when the plan completes (or when you re-enter plan mode mid-execution), reporting `Restored <provider>/<id> (thinking: <level>)` with the level read back from `pi.getThinkingLevel()`, so the notice states what is actually in effect. A no-op selection takes no snapshot and triggers no restore.
@@ -115,7 +117,7 @@ after each step: keep going
 - `☐ n. ...` - the next pending steps, numbered to match `/todos` and the `📋 completed/total` footer.
 - `  +N more` - how many remaining steps did not fit.
 
-Todo descriptions in the extension-managed frontmatter are stored in full (after inline Markdown is normalized and multiline/nested text is folded). The TUI widget uses a custom component, whose `render(width)` runs again after terminal-width changes. Each current/pending row reserves space for its glyph and step number, then ellipsizes only its label with ANSI- and Unicode-display-width-safe truncation. It therefore stays one terminal line per row while a wider terminal automatically reveals more of the durable description.
+Full normalized step descriptions remain in the plan body and execution context. Only the extension-managed `todos` frontmatter labels are shortened to at most 100 characters (with `...` when needed); the TUI widget may further ellipsize a label to fit the current terminal width. Its custom component rerenders on resize, so wider terminals reveal more of the frontmatter label without losing the detailed plan text.
 
 The compact row count intentionally remains fixed. pi's TUI hard-caps string-array widgets at `InteractiveMode.MAX_WIDGET_LINES` (10 lines), and a long plan used to lose exactly the still-pending portion. `buildTodoWidgetRows` in `utils.ts` still emits at most `MAX_TODO_WIDGET_ROWS` (8) structural rows: summary, current step, pending steps, and an exact `+N more` tail. TUI mode renders those rows with the width-responsive component; RPC/non-TUI clients receive a bounded string-array fallback. Unit tests cover long-description persistence, width boundaries, and the fixed-row `+N more` regression sweep.
 
@@ -126,7 +128,8 @@ For the full, uncollapsed list at any time, use `/todos`.
 ### Plan Mode (Read-Only)
 - `write`/`edit` allowed **only** for `*.md` files under `~/.pi/plans/` (or `$PI_PLAN_DIR`)
 - Any other write/edit path is blocked with an explanatory reason
-- Other active tools remain available
+- After `save_plan` creates a draft, `update_plan` can replace the full ordered `Plan:` steps and/or the body of `Context`, `Notes`, and `Results` Markdown sections. Omitted fields stay unchanged; missing sections are created as `##` headings, and an empty value clears that section. Plan/Context/Notes/Results are treated as peer sections regardless of heading depth, so updating one preserves the others. These saved sections are distinct from the pre-flight's run-only context note.
+- Other active tools remain available except file mutators that bypass the plan-path guard: hashline `replace`, `replace_within`, `insert`, `copy`, `move`, and `undo_last_change` are hidden and blocked; read-only `read` and `anchor_grep` remain available.
 - Bash commands filtered through allowlist
 - Agent creates a plan without making changes
 - The agent creates a new saved plan with `save_plan`, supplying only a short name and full markdown content. The tool creates the plans directory when needed, derives a collision-free `YYYY-MM-DD-task-summary.md` filename using the current date, and supplies the plan date itself.
@@ -151,7 +154,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 ```
 
 - `repo`/`title`/`date` may be authored by the agent (or left out and backfilled, see above).
-- `todos` is **exclusively extension-managed** — a single-line JSON array, derived from the plan body's numbered `Plan:` steps and kept in sync with execution progress. Each `text` value retains the complete normalized/folded step description; screen-width elision happens only in the compact widget. The agent never authors or edits this field directly; progress changes only after `complete_plan_step` succeeds, and the extension mirrors that result into on-disk frontmatter.
+- `todos` is **exclusively extension-managed** — a single-line JSON array derived from the numbered `Plan:` list and kept in sync with execution progress. Each `text` is a concise label (up to 100 characters); the full normalized description remains in the markdown body and is used by execution. Shortened labels include a `textHash` of the full normalized description so shared prefixes cannot transfer completion between distinct steps; older labels without a hash are migrated when loaded. `complete_plan_step` records progress, while `update_plan` keeps step descriptions and progress summaries synchronized.
 - `model` (a `"provider/modelId"` reference), `thinking` and `stepMode` (`continue` | `stop`) are **also exclusively extension-managed**: they record what the plan last executed with, are written by the pre-flight panel (and by `/plan step`), and are re-offered when the plan is resumed. Invalid values are ignored on read, an unknown/unavailable model falls back to the current one with a warning, and rewriting a plan's body never drops them.
 - Plan files saved before this feature existed have no frontmatter block at all; every field falls back gracefully (heading-based title, filename-derived date, no `todos` ⇒ nothing to resume) and nothing about them is rewritten.
 
@@ -160,9 +163,10 @@ todos: [{"step":1,"text":"...","completed":false}]
 - The model/thinking level chosen in the pre-flight panel are applied, and restored when the plan finishes
 - Agent executes steps in order
 - Agent calls `complete_plan_step` after each finished step; it rejects calls outside execution, repeated steps, missing steps, and out-of-order steps without changing progress
+- During planning (after saving a draft) or execution, `update_plan` can revise the plan. Step changes require the complete ordered list and preserve completion for unchanged steps; optional Context/Notes/Results fields replace those sections, while omitted fields remain unchanged.
 - Widget shows progress and the current step-gating mode
 - In `stop after each step` mode, a `Step n/N complete - continue?` prompt appears after each completed step
-- The backing plan file's `todos` frontmatter is kept in sync on disk as steps complete (and once more when the plan finishes), so progress survives a session restart or a resume via `/plan list`
+- The backing plan file's compact `todos` frontmatter is kept in sync on disk as steps complete or the plan is revised, so progress survives a session restart or a resume via `/plan list`
 - Resuming a plan (either via session restart or `/plan list`) leaves plan mode and grants full tool access, exactly like executing a freshly created plan does
 
 ### Command Allowlist
@@ -198,7 +202,7 @@ Blocked (examples):
 
 ## Tests
 
-`utils.ts` (bash gating, frontmatter, full-description todo extraction/sync, width-aware compact widget labels/rows, execution settings, thinking-level list, model-picker rows) has a test file:
+`utils.ts` (bash gating, frontmatter, full-description plan extraction with compact todo persistence, width-aware compact widget labels/rows, execution settings, thinking-level list, model-picker rows) has a test file:
 
 ```sh
 node --experimental-strip-types extensions/plan-mode/utils.test.ts
