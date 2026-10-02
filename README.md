@@ -9,7 +9,7 @@
 Install the latest release from its pinned Git tag:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.1.0
+pi install git:github.com/arumie/pi-plan-mode@v1.2.0
 ```
 
 Restart pi (or run `/reload`) after installing. Confirm the package is registered with `pi list`.
@@ -29,7 +29,8 @@ Do not run the package alongside the legacy auto-discovered extension at `~/.pi/
 - `/plan step [on|off|status]` — configure pausing after each execution step.
 - `save_plan` — agent tool available in and out of plan mode that saves a named plan with a generated `YYYY-MM-DD-` filename and managed frontmatter.
 - `complete_plan_step` — execution-only agent tool that records the next completed step in order.
-- `update_plan` — agent tool for revising saved plan steps or the Context, Notes, and Results sections during planning or execution.
+- `list_plans` — agent tool available in every mode to list saved plans and their filenames/paths.
+- `update_plan` — agent tool available in every mode; target a specific saved plan with a filename/path from `list_plans`, or omit it during planning/execution to use the active plan.
 - The execution pre-flight offers an optional run-only context note (select **Context** or press `Ctrl+N`); it is not saved to plan frontmatter.
 - `/todos` — show the full current plan progress list.
 - `Ctrl+Alt+P` — toggle planning mode.
@@ -65,8 +66,8 @@ Git tags are the release mechanism:
 1. Update `package.json`'s version, `CHANGELOG.md`, and documentation.
 2. Run `npm run release:check`.
 3. Commit and push `main`.
-4. Create and push an annotated semantic-version tag, for example `v1.1.0`.
-5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.1.0`.
+4. Create and push an annotated semantic-version tag, for example `v1.2.0`.
+5. Install that exact revision with `pi install git:github.com/arumie/pi-plan-mode@v1.2.0`.
 
 A Git ref in `pi install` is pinned. `pi update --extensions` reconciles the configured ref but does not advance it to a newer tag; install the new tag explicitly when upgrading. Remove the package with:
 

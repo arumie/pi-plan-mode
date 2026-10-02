@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.1.0
+pi install git:github.com/arumie/pi-plan-mode@v1.2.0
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -18,7 +18,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Bash allowlist**: Only read-only bash commands are allowed, checked structurally (quote-aware) so read-only research like `gh pr view` and `rg -ln "a|b"` works
 - **Plan extraction**: Extracts numbered steps only from the `Plan:` section, excluding fenced examples and subsequent Context/Notes/Results lists, and folding multi-line steps into one label
 - **Progress tracking**: A compact, width-responsive widget tracks ordered steps while the detailed descriptions remain in the plan body; frontmatter stores concise labels (see [Progress widget](#progress-widget))
-- **Plan and execution tools**: `complete_plan_step` records execution progress; `update_plan` is available during planning (after `save_plan`) and execution to revise ordered steps or saved Context, Notes, and Results sections
+- **Plan and execution tools**: `complete_plan_step` records execution progress; `list_plans` lists saved plans in every mode; `update_plan` is available in every mode to revise a targeted plan's steps or saved Context, Notes, and Results sections
 - **Session persistence**: State survives session resume
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode, and optionally add run-only context
 - **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
@@ -39,7 +39,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 
 ## Usage
 
-`save_plan` is also available outside plan mode. It saves the plan without changing the session's current tool access or active execution progress.
+`save_plan`, `list_plans`, and `update_plan` are available outside plan mode. `list_plans` returns stable filenames and paths; pass one as `plan` to `update_plan` when editing a specific saved plan. Outside planning/execution mode, `update_plan` requires this explicit target and does not change active execution progress.
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
@@ -54,7 +54,7 @@ Plan:
 ```
 
 4. Choose "Execute the plan" when prompted, then confirm (or change) the model, thinking level and step-gating mode; select **Context** or press `Ctrl+N` to add a note for this execution only
-5. After saving a draft, `update_plan` can revise its steps or Context/Notes/Results; during execution, the agent calls `complete_plan_step` after each finished step and can revise the plan with `update_plan` if needed
+5. `list_plans` can identify a saved plan to revise with `update_plan`; during planning/execution, omitting `plan` updates the active plan. During execution, the agent calls `complete_plan_step` after each finished step and can revise the plan with `update_plan` if needed
 6. Progress widget shows completion status and the current step-gating mode (compact - see [Progress widget](#progress-widget); `/todos` prints the full list)
 
 At step 4, if the plan was never saved to disk during planning, the extension auto-saves it to `~/.pi/plans/` (or `$PI_PLAN_DIR`) so execution always has a durable, resumable home from the start.
@@ -128,7 +128,7 @@ For the full, uncollapsed list at any time, use `/todos`.
 ### Plan Mode (Read-Only)
 - `write`/`edit` allowed **only** for `*.md` files under `~/.pi/plans/` (or `$PI_PLAN_DIR`)
 - Any other write/edit path is blocked with an explanatory reason
-- After `save_plan` creates a draft, `update_plan` can replace the full ordered `Plan:` steps and/or the body of `Context`, `Notes`, and `Results` Markdown sections. Omitted fields stay unchanged; missing sections are created as `##` headings, and an empty value clears that section. Plan/Context/Notes/Results are treated as peer sections regardless of heading depth, so updating one preserves the others. These saved sections are distinct from the pre-flight's run-only context note.
+- `list_plans` lists saved plans and their filenames/paths in every mode. `update_plan` targets a filename or path returned by `list_plans`, or the active plan when omitted during planning/execution; it can replace the full ordered `Plan:` steps and/or the body of `Context`, `Notes`, and `Results` Markdown sections. Omitted fields stay unchanged; missing sections are created as `##` headings, and an empty value clears that section. Plan/Context/Notes/Results are treated as peer sections regardless of heading depth, so updating one preserves the others. These saved sections are distinct from the pre-flight's run-only context note.
 - Other active tools remain available except file mutators that bypass the plan-path guard: hashline `replace`, `replace_within`, `insert`, `copy`, `move`, and `undo_last_change` are hidden and blocked; read-only `read` and `anchor_grep` remain available.
 - Bash commands filtered through allowlist
 - Agent creates a plan without making changes
@@ -163,7 +163,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 - The model/thinking level chosen in the pre-flight panel are applied, and restored when the plan finishes
 - Agent executes steps in order
 - Agent calls `complete_plan_step` after each finished step; it rejects calls outside execution, repeated steps, missing steps, and out-of-order steps without changing progress
-- During planning (after saving a draft) or execution, `update_plan` can revise the plan. Step changes require the complete ordered list and preserve completion for unchanged steps; optional Context/Notes/Results fields replace those sections, while omitted fields remain unchanged.
+- `update_plan` is available in every mode; in planning/execution it defaults to the active plan, while outside those modes it requires a filename or path from `list_plans`. Step changes require the complete ordered list and preserve completion for unchanged steps; optional Context/Notes/Results fields replace those sections, while omitted fields remain unchanged.
 - Widget shows progress and the current step-gating mode
 - In `stop after each step` mode, a `Step n/N complete - continue?` prompt appears after each completed step
 - The backing plan file's compact `todos` frontmatter is kept in sync on disk as steps complete or the plan is revised, so progress survives a session restart or a resume via `/plan list`

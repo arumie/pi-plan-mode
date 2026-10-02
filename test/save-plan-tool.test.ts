@@ -25,7 +25,7 @@ const tools = new Map<string, RegisteredTool>();
 const commands = new Map<string, RegisteredCommand>();
 const handlers = new Map<string, (...args: any[]) => Promise<any>>();
 let activeTools = [
-	"read", "bash", "write", "edit", "update_plan", "anchor_grep",
+	"read", "bash", "write", "edit", "list_plans", "update_plan", "anchor_grep",
 	"replace", "replace_within", "insert", "copy", "move", "undo_last_change",
 ];
 let persistedEntries = 0;
@@ -89,10 +89,44 @@ try {
 	const content = await readFile(join(dir, filename), "utf8");
 	assert.match(content, /todos: \[{"step":1,"text":"Save a plan without enabling plan mode","completed":false}\]/);
 	console.log("✓ save_plan works outside plan mode without mutating active plan state");
-
-
+	const listPlans = tools.get("list_plans");
+	assert.ok(listPlans, "list_plans should be registered");
 	const updatePlan = tools.get("update_plan");
 	assert.ok(updatePlan, "update_plan should be registered");
+	assert.ok(activeTools.includes("list_plans"), "list_plans should be available in normal mode");
+	assert.ok(activeTools.includes("update_plan"), "update_plan should be available in normal mode");
+
+	const secondSave = await savePlan.execute(
+		"second-save-call",
+		{ name: "Leave Other Plan Alone", content: "# Leave Other Plan Alone\n\nPlan:\n\n1. Keep this other saved plan unchanged.\n" },
+		undefined,
+		undefined,
+		{ cwd: dir },
+	);
+	const listed = await listPlans.execute("list-call", {}, undefined, undefined, { cwd: dir });
+	assert.equal(listed.details.plans.length, 2, "list_plans returns all saved plans");
+	assert.ok(listed.details.plans.some((plan: any) => plan.name === filename && plan.path === join(dir, filename)));
+	assert.match(listed.content[0]?.text ?? "", new RegExp(filename));
+	assert.ok(listed.content[0]?.text.includes(secondSave.details.path));
+
+	const outsideUpdate = await updatePlan.execute(
+		"targeted-update-call",
+		{ plan: filename, notes: "Updated only the selected saved plan." },
+		undefined,
+		undefined,
+		{ cwd: dir },
+	);
+	assert.equal(outsideUpdate.details.path, join(dir, filename));
+	assert.match(await readFile(join(dir, filename), "utf8"), /## Notes\n\nUpdated only the selected saved plan\./);
+	assert.doesNotMatch(await readFile(secondSave.details.path, "utf8"), /Updated only the selected saved plan/);
+	assert.equal(persistedEntries, 0, "normal-mode plan edits must not change active plan state");
+	await assert.rejects(
+		() => updatePlan.execute("missing-target-call", { notes: "No target" }, undefined, undefined, { cwd: dir }),
+		/Specify plan.*list_plans/,
+	);
+	console.log("✓ list_plans and update_plan target a specific saved plan in normal mode");
+
+
 	const updatePath = join(dir, "2026-09-25-active-plan.md");
 	const firstStep = "Keep the existing setup step unchanged";
 	const previousSecond = "Remove the obsolete follow-up";
@@ -154,6 +188,25 @@ try {
 	assert.ok(persistedEntries > 0, "updating the plan persists execution state");
 	console.log("✓ update_plan revises the saved Plan body and preserves concise frontmatter/progress");
 
+	const activeContextBefore = await handlers.get("before_agent_start")?.({}, executionContext);
+	const persistedBeforeOtherUpdate = persistedEntries;
+	const otherPlanStep = "Implement the revised unrelated plan task";
+	const otherPlanUpdate = await updatePlan.execute(
+		"unrelated-plan-update",
+		{ plan: secondSave.details.path, steps: [otherPlanStep] },
+		undefined,
+		undefined,
+		executionContext,
+	);
+	assert.doesNotMatch(otherPlanUpdate.content[0]?.text ?? "", /All plan steps are complete|Continue with step/);
+	assert.deepEqual(otherPlanUpdate.details.todos.map((todo: any) => todo.completed), [false]);
+	assert.match(await readFile(secondSave.details.path, "utf8"), new RegExp(otherPlanStep));
+	assert.equal(await readFile(updatePath, "utf8"), updatedContent, "editing another plan leaves the active file unchanged");
+	assert.equal(persistedEntries, persistedBeforeOtherUpdate, "editing another plan does not persist active execution state");
+	const activeContextAfter = await handlers.get("before_agent_start")?.({}, executionContext);
+	assert.equal(activeContextAfter.message.content, activeContextBefore.message.content, "editing another plan leaves active execution progress unchanged");
+	console.log("✓ updating an unrelated plan during execution does not report completion or change active progress");
+
 	const sharedPrefix = "Implement the shared persistence and validation workflow across the service and verify all acceptance tests for ";
 	await updatePlan.execute("collision-update", {
 		steps: [sharedPrefix + "customer records", sharedPrefix + "business records"],
@@ -181,6 +234,8 @@ try {
 		assert.equal(response?.block, true, `${name} tool calls should be blocked even if reactivated`);
 	}
 	assert.ok(activeTools.includes("update_plan"), "update_plan should be available in plan mode");
+	assert.ok(activeTools.includes("list_plans"), "list_plans should be available in plan mode");
+	assert.equal(await handlers.get("tool_call")?.({ toolName: "list_plans", input: {} }, executionContext), undefined);
 	assert.equal(await handlers.get("tool_call")?.({ toolName: "update_plan", input: {} }, executionContext), undefined);
 	assert.ok(activeTools.includes("anchor_grep"), "read-only hashline search remains available in plan mode");
 	assert.equal(await handlers.get("tool_call")?.({ toolName: "anchor_grep", input: {} }, executionContext), undefined);

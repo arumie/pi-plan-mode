@@ -2,6 +2,20 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.2.0] - 2026-10-02
+
+### Added
+
+- Add the always-available `list_plans` agent tool to list saved plans with filenames, paths, metadata, and completion counts.
+
+### Changed
+
+- Make `update_plan` available in every mode and allow targeting a specific saved plan by filename or path without changing another plan's active execution progress.
+
+### Fixed
+
+- Avoid reporting execution complete when updating an unrelated saved plan's steps.
+
 ## [1.1.0] - 2026-10-01
 
 ### Added

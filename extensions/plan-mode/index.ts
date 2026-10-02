@@ -64,8 +64,8 @@ import {
 // write/edit stay active in plan mode but are gated to the plans directory.
 // Hashline's editing tools have no path argument for PLAN_GATED_TOOLS; hide them here
 // and also reject tool calls below in case another extension reactivates them.
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan", "update_plan"];
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "save_plan", "update_plan"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire", "write", "edit", "save_plan", "list_plans", "update_plan"];
+const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "save_plan", "list_plans", "update_plan"];
 const PLAN_MODE_MUTATION_TOOLS = new Set<string>(["replace", "replace_within", "insert", "copy", "move", "undo_last_change"]);
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(PLAN_MODE_MUTATION_TOOLS);
 const PLAN_GATED_TOOLS = new Set<string>(["write", "edit"]);
@@ -410,6 +410,42 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	/**
+	 * Lists saved plans with their stable filename/path identifiers so the agent
+	 * can choose an exact target for update_plan.
+	 */
+	pi.registerTool({
+		name: "list_plans",
+		label: "List Saved Plans",
+		description: "List saved plans with filenames, paths, metadata, and completion counts. Use a returned filename or path to target a specific plan with update_plan.",
+		promptSnippet: "List saved plans to choose a target for update_plan",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, signal) {
+			if (signal?.aborted) throw new Error("Plan listing cancelled.");
+			const plans = await listSavedPlans(planWriteDir());
+			const summaries = plans.map((plan) => ({
+				name: plan.name,
+				path: plan.path,
+				title: plan.title,
+				repo: plan.repo,
+				date: plan.date,
+				steps: plan.todos?.length ?? 0,
+				completed: plan.todos?.filter((todo) => todo.completed).length ?? 0,
+			}));
+			const text = summaries.length === 0
+				? `No saved plans found in ${planWriteDir()}.`
+				: `Saved plans:\n${summaries.map((plan) => {
+					const metadata = [plan.title, plan.repo, plan.date].filter(Boolean).join(" · ");
+					const progress = plan.steps > 0 ? `\n  progress: ${plan.completed}/${plan.steps} complete` : "";
+					return `- ${plan.name}${metadata ? ` — ${metadata}` : ""}\n  path: ${plan.path}${progress}`;
+				}).join("\n")}`;
+			return {
+				content: [{ type: "text", text }],
+				details: { plans: summaries },
+			};
+		},
+	});
+
+	/**
 	 * Records exactly one completed execution step. The active plan's file path
 	 * is also the mutation-queue key, serializing sibling tool calls so they
 	 * cannot both complete the same next step.
@@ -478,19 +514,20 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 /**
 	 * Revises a saved plan's ordered steps and/or its Context, Notes, and Results
-	 * sections. The same tool supports planning after save_plan and execution.
+	 * sections. The tool can target a listed plan in any mode or default to the active plan during planning/execution.
 	 */
 	pi.registerTool({
 		name: "update_plan",
 		executionMode: "sequential",
 		label: "Update Plan",
-		description: "Edit a saved plan during planning or execution. Optionally provide the complete ordered steps and/or replacement text for its Context, Notes, and Results sections. Omitted fields remain unchanged.",
+		description: "Edit a specific saved plan in any mode. Set plan to a filename or path returned by list_plans; during planning or execution, omit it to target the active plan. Optionally provide the complete ordered steps and/or replacement text for its Context, Notes, and Results sections. Omitted fields remain unchanged.",
 		promptSnippet: "Revise the saved plan steps or its Context, Notes, and Results sections",
 		promptGuidelines: [
-			"During planning, save the draft with save_plan before using update_plan. During planning or execution, include steps only when changing the ordered plan and supply the complete revised list; unchanged completed steps retain their state.",
+			"In normal mode, call list_plans and pass the chosen filename or path as plan; during planning or execution, omitting plan targets the active plan. Include steps only when changing the ordered plan and supply the complete revised list; unchanged completed steps retain their state.",
 			"Context, notes, and results replace the body of their matching Markdown sections; omitted fields remain unchanged, and missing sections are created. These are saved plan sections, distinct from the run-only execution context note.",
 		],
 		parameters: Type.Object({
+			plan: Type.Optional(Type.String({ description: "Exact filename or absolute path returned by list_plans; required outside planning/execution mode" })),
 			steps: Type.Optional(Type.Array(Type.String({ minLength: 6 }), { minItems: 1, description: "Complete ordered list of detailed step descriptions; omit when steps do not change" })),
 			context: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Context section; empty text clears it" })),
 			notes: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Notes section; empty text clears it" })),
@@ -498,20 +535,39 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Plan update cancelled.");
-			if (!executionMode && !planModeEnabled) {
-				throw new Error("update_plan is only available while planning or executing a plan.");
-			}
 			if (params.steps === undefined && params.context === undefined && params.notes === undefined && params.results === undefined) {
 				throw new Error("Supply at least one of steps, context, notes, or results to update.");
 			}
 
-			const path = activePlanPath ?? (planModeEnabled ? lastSavedPlanPath : undefined);
+			const requestedPlan = params.plan?.trim();
+			if (params.plan !== undefined && !requestedPlan) {
+				throw new Error("Provide a non-empty plan filename or path.");
+			}
+
+			let path: string | undefined;
+			if (requestedPlan) {
+				const plans = await listSavedPlans(planWriteDir());
+				const absolutePath = resolve(requestedPlan);
+				const selected = plans.find((plan) => plan.name === requestedPlan || plan.path === absolutePath);
+				if (!selected) {
+					throw new Error(`Saved plan not found: ${requestedPlan}. Use list_plans to see valid filenames and paths.`);
+				}
+				path = selected.path;
+			} else {
+				path = activePlanPath ?? (planModeEnabled ? lastSavedPlanPath : undefined);
+			}
+
+			const sessionOnlyPlan = !path && !requestedPlan && (executionMode || planModeEnabled) && todoItems.length > 0;
 			if (planModeEnabled && !path) {
 				throw new Error("Save the draft with save_plan before using update_plan during planning.");
+			}
+			if (!path && !sessionOnlyPlan) {
+				throw new Error("Specify plan using a filename or path from list_plans when updating outside planning or execution mode.");
 			}
 			if (!path && (params.context !== undefined || params.notes !== undefined || params.results !== undefined)) {
 				throw new Error("Context, notes, and results can only be updated in a saved plan file.");
 			}
+			const updatesActivePlan = !requestedPlan || path === activePlanPath || (planModeEnabled && path === lastSavedPlanPath);
 
 			let updated: ReturnType<typeof updatePlanContentInContent>;
 			if (path) {
@@ -527,31 +583,30 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				updated = updatePlanContentInContent(fallback, params);
 			}
 
-			if (path && planModeEnabled) {
+			if (path && updatesActivePlan && planModeEnabled) {
 				activePlanPath = path;
 				lastSavedPlanPath = path;
 			}
-			if (params.steps !== undefined) {
+			if (params.steps !== undefined && updatesActivePlan && (planModeEnabled || executionMode)) {
 				todoItems = updated.todos;
 				updateStatus(ctx);
 			}
-			persistState();
-
+			if (updatesActivePlan && (planModeEnabled || executionMode)) persistState();
 			const changed = [
 				...(params.steps !== undefined ? ["ordered steps"] : []),
 				...(params.context !== undefined ? ["Context"] : []),
 				...(params.notes !== undefined ? ["Notes"] : []),
 				...(params.results !== undefined ? ["Results"] : []),
 			];
-			const next = executionMode ? todoItems.find((item) => !item.completed) : undefined;
+			const next = executionMode && updatesActivePlan ? todoItems.find((item) => !item.completed) : undefined;
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Updated the saved plan (${changed.join(", ")}).${next ? `\nContinue with step ${next.step}: ${next.text}` : executionMode && params.steps !== undefined ? "\nAll plan steps are complete." : ""}`,
+						text: `Updated the saved plan (${changed.join(", ")}).${next ? `\nContinue with step ${next.step}: ${next.text}` : executionMode && updatesActivePlan && params.steps !== undefined ? "\nAll plan steps are complete." : ""}`,
 					},
 				],
-				details: { todos: todoItems, path, updated: changed },
+				details: { todos: updated.todos, path, updated: changed },
 			};
 		},
 	});
