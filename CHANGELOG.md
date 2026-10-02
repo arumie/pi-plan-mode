@@ -2,6 +2,18 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.3.0] - 2026-10-02
+
+### Added
+
+- Add editable fuzzy search to `/plan list`, matching filename, title, repo, and date, with optional command-line query text.
+- Add `/plan list --all` to show plans from every repo, including legacy plans without repo metadata.
+
+### Changed
+
+- Scope `/plan list` to the current repo by default; the agent's `list_plans` tool still lists all plans.
+- Use the git root folder name when no origin remote is available, keeping repo detection consistent from subdirectories.
+
 ## [1.2.0] - 2026-10-02
 
 ### Added

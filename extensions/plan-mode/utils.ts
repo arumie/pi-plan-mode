@@ -469,8 +469,8 @@ export function normalizePlanContent(
 /**
  * Best-effort repo name detection: parses `git remote get-url origin` (works
  * for both SSH `git@host:org/repo.git` and HTTPS `https://host/org/repo.git`
- * remote URL forms), falling back to the cwd folder's basename when there's
- * no git repo, no `origin` remote, `git` isn't installed, or the command
+ * remote URL forms), falling back to the git root's basename (or the cwd
+ * folder's basename outside git) when there's no `origin` remote or git
  * times out.
  */
 export async function detectRepoName(cwd: string): Promise<string> {
@@ -481,6 +481,12 @@ export async function detectRepoName(cwd: string): Promise<string> {
 		if (name) return name;
 	} catch {
 		// Not a git repo, no origin remote, git missing, or timed out - fall back below.
+	}
+	try {
+		const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 2000 });
+		if (stdout.trim()) return basename(stdout.trim());
+	} catch {
+		// Outside git or git unavailable - use the working directory below.
 	}
 	return basename(cwd);
 }

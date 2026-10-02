@@ -18,7 +18,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { DynamicBorder, isToolCallEventType, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	buildModelPickerItems,
@@ -657,7 +657,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		title: string,
 		rows: { key: string; label: string; description?: string; value: T }[],
-		opts?: { hint?: string; initialKey?: string; ctrlNKey?: string },
+		opts?: { hint?: string; initialKey?: string; ctrlNKey?: string; search?: string },
 	): Promise<T | null> {
 		if (rows.length === 0) return null;
 
@@ -673,21 +673,40 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 			container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
 
-			const selectList = new SelectList(items, Math.min(items.length, 10), {
-				selectedPrefix: (t) => theme.fg("accent", t),
-				selectedText: (t) => theme.fg("accent", t),
-				description: (t) => theme.fg("muted", t),
-				scrollInfo: (t) => theme.fg("dim", t),
-				noMatch: (t) => theme.fg("warning", t),
+			const listTheme = {
+				selectedPrefix: (t: string) => theme.fg("accent", t),
+				selectedText: (t: string) => theme.fg("accent", t),
+				description: (t: string) => theme.fg("muted", t),
+				scrollInfo: (t: string) => theme.fg("dim", t),
+				noMatch: (t: string) => theme.fg("warning", t),
+			};
+			const createList = (query: string) => {
+				const filtered = fuzzyFilter(items, query, (item) => `${item.label} ${item.description ?? ""}`);
+				const list = new SelectList(filtered, Math.min(items.length, 10), listTheme);
+				list.onSelect = (item) => done(item.value);
+				list.onCancel = () => done(null);
+				return { list, count: filtered.length };
+			};
+			let { list: selectList, count } = createList(opts?.search ?? "");
+			const input = opts?.search !== undefined ? new Input() : undefined;
+			if (input) {
+				// Insert the initial query so the cursor starts at its end.
+				input.handleInput(opts?.search ?? "");
+				container.addChild(input);
+			}
+			container.addChild({
+				render: (width) => count > 0
+					? selectList.render(width)
+					: new Text(theme.fg("warning", "No matching plans"), 1, 0).render(width),
+				invalidate: () => selectList.invalidate(),
 			});
-			selectList.onSelect = (item) => done(item.value);
-			selectList.onCancel = () => done(null);
-			container.addChild(selectList);
 
 			container.addChild(new Text(theme.fg("dim", hint), 1, 0));
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
 			return {
+				get focused() { return input?.focused ?? false; },
+				set focused(value: boolean) { if (input) input.focused = value; },
 				render(width: number) {
 					return container.render(width);
 				},
@@ -699,7 +718,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 						done(opts.ctrlNKey);
 						return;
 					}
-					selectList.handleInput(data);
+					if (!input || (["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const).some(
+						(action) => _kb.matches(data, action),
+					)) {
+						selectList.handleInput(data);
+					} else {
+						const previous = input.getValue();
+						input.handleInput(data);
+						if (input.getValue() !== previous) {
+							({ list: selectList, count } = createList(input.getValue()));
+						}
+					}
 					tui.requestRender();
 				},
 			};
@@ -710,16 +739,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return row ? row.value : null;
 	}
 
-	async function selectSavedPlan(ctx: ExtensionContext, plans: SavedPlan[]): Promise<SavedPlan | null> {
+	async function selectSavedPlan(ctx: ExtensionContext, plans: SavedPlan[], scope: string, query: string): Promise<SavedPlan | null> {
 		return selectFromList<SavedPlan>(
 			ctx,
-			"Select a plan to load",
+			`Select a plan to load (${scope})`,
 			plans.map((p) => ({
 				key: p.path,
 				label: p.name,
 				description: [p.title ?? "(no title found)", p.repo, p.date].filter(Boolean).join(" · "),
 				value: p,
 			})),
+			{ search: query, hint: "type to fuzzy search • ↑↓ navigate • enter select • esc cancel" },
 		);
 	}
 
@@ -1054,32 +1084,31 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 	}
 
-	async function loadSavedPlan(ctx: ExtensionContext, filter: string): Promise<void> {
+	async function loadSavedPlan(ctx: ExtensionContext, args: string): Promise<void> {
 		const dir = planWriteDir();
-		let plans = await listSavedPlans(dir);
-
-		const needle = filter.trim().toLowerCase();
-		if (needle.length > 0) {
-			plans = plans.filter(
-				(p) =>
-					p.name.toLowerCase().includes(needle) ||
-					p.title?.toLowerCase().includes(needle) ||
-					p.repo?.toLowerCase().includes(needle) ||
-					p.date?.toLowerCase().includes(needle),
-			);
+		// --all disables repo filtering for this invocation; -- ends option parsing.
+		let all = false;
+		let parseOptions = true;
+		const queryParts: string[] = [];
+		for (const token of args.trim().split(/\s+/).filter(Boolean)) {
+			if (parseOptions && token === "--") parseOptions = false;
+			else if (parseOptions && token === "--all") all = true;
+			else queryParts.push(token);
 		}
+		const repo = all ? undefined : await detectRepoName(ctx.cwd);
+		const scope = repo === undefined ? "all repos" : `repo: ${repo}`;
+		let plans = await listSavedPlans(dir);
+		if (repo !== undefined) plans = plans.filter((plan) => plan.repo === repo);
 
 		if (plans.length === 0) {
 			ctx.ui.notify(
-				needle.length > 0
-					? `No saved plans in ${dir} matching "${filter.trim()}".`
-					: `No saved plans found in ${dir}.`,
+				`No saved plans found in ${dir} (${scope}).${all ? "" : " Use /plan list --all to show plans from every repo, including plans without repo metadata."}`,
 				"warning",
 			);
 			return;
 		}
 
-		const plan = await selectSavedPlan(ctx, plans);
+		const plan = await selectSavedPlan(ctx, plans, scope, queryParts.join(" "));
 		if (!plan) return;
 
 		let content: string;
@@ -1191,11 +1220,12 @@ ${buildExecutionInstructions(stepMode)}`,
 
 	pi.registerCommand("plan", {
 		description:
-			"Toggle plan mode; '/plan list [filter]' loads a saved plan; '/plan step [on|off|status]' toggles stopping after each step",
+			"Toggle plan mode; '/plan list [--all] [query]' fuzzy-searches saved plans (current repo by default); '/plan step [on|off|status]' toggles stopping after each step",
 		getArgumentCompletions: (prefix) => {
 			const needle = prefix.trim().toLowerCase();
 			const options = [
 				{ value: "list", label: "list" },
+				{ value: "list --all", label: "list --all (all repos)" },
 				{ value: "step", label: "step" },
 				{ value: "step on", label: "step on" },
 				{ value: "step off", label: "step off" },

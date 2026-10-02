@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.2.0
+pi install git:github.com/arumie/pi-plan-mode@v1.3.0
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -31,7 +31,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 
 - `/plan` - Toggle plan mode
 - `/plan step [on|off|status]` - Control whether execution stops after each completed step. `on` stops, `off` keeps going (the default), bare `/plan step` toggles, `status` just reports. Works mid-execution and is persisted to the active plan file.
-- `/plan list [filter]` - Pick a previously saved plan (from `~/.pi/plans/`, or `$PI_PLAN_DIR`). Each entry shows its filename with `title · repo · date` faded underneath (falling back to the first markdown heading / filename-derived values for plans saved before this feature existed). Optional `filter` narrows the list by filename, title, repo, or date substring.
+- `/plan list [--all] [query]` - Pick a previously saved plan (from `~/.pi/plans/`, or `$PI_PLAN_DIR`). Defaults to plans whose `repo` metadata matches the current repo, detected from the origin remote name, falling back to the git root folder name (or working directory name outside git). Use `/plan list --all` to disable repo filtering for that invocation, including plans without repo metadata; the next `/plan list` still defaults to the current repo. Each entry shows its filename and `title · repo · date` metadata (with heading / filename-derived fallbacks for older plans). Optional `query` seeds an editable search field; type to fuzzy-search filename, title, repo, and date, with best matches first. Search is case-insensitive and supports non-consecutive characters and multiple terms. Use ↑↓ to navigate, Enter to select, and Esc to cancel. A query with no matches can be edited without closing the picker. For example, `/plan list dbmig` searches this repo, and `/plan list --all dbmig` searches every repo. Use `--` before a query containing a literal `--all`.
   - If the selected plan has unfinished `todos` in its frontmatter, you're prompted to **resume execution** (opens the same pre-flight panel, pre-seeded with the model/thinking/step mode that plan last ran with; you can add run-only context before continuing from the first incomplete step) or **load as reference only** (injects the file's contents as context, same as before).
   - Otherwise, the plan is loaded as reference only, unchanged from before.
 - `/todos` - Show the **full** plan todo list (every step with `✓`/`○`, plus an `X/Y complete` header, the step-gating mode and the active model). The widget is a compact view; this is the authoritative one.
@@ -39,7 +39,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 
 ## Usage
 
-`save_plan`, `list_plans`, and `update_plan` are available outside plan mode. `list_plans` returns stable filenames and paths; pass one as `plan` to `update_plan` when editing a specific saved plan. Outside planning/execution mode, `update_plan` requires this explicit target and does not change active execution progress.
+`save_plan`, `list_plans`, and `update_plan` are available outside plan mode. `list_plans` continues to list all repos (the repo scope applies only to `/plan list`) and returns stable filenames and paths; pass one as `plan` to `update_plan` when editing a specific saved plan. Outside planning/execution mode, `update_plan` requires this explicit target and does not change active execution progress.
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
