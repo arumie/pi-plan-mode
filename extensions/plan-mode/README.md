@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.3.0
+pi install git:github.com/arumie/pi-plan-mode@v1.3.1
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -21,7 +21,7 @@ Restart pi (or run `/reload`) after installation. For local development from a c
 - **Plan and execution tools**: `complete_plan_step` records execution progress; `list_plans` lists saved plans in every mode; `update_plan` is available in every mode to revise a targeted plan's steps or saved Context, Notes, and Results sections
 - **Session persistence**: State survives session resume
 - **Pre-flight panel**: Before execution starts, pick the model, thinking level and step-gating mode, and optionally add run-only context
-- **Model/thinking auto-restore**: The model borrowed for execution is handed back when the plan finishes
+- **Execution model stays active**: After the plan finishes, the model used for execution remains selected to preserve its prompt cache; the pre-execution thinking level is restored when supported.
 - **Step gating**: Optionally stop after each completed step and confirm before continuing (default: keep going)
 - **Agent plan-save tool**: `save_plan` accepts a plan name and markdown content, creates a dated file automatically, and normalizes its frontmatter in plan mode and normal mode
 - **`repo`/`title`/`date` frontmatter**: Plan files get a `---` fenced frontmatter block backfilled automatically on save
@@ -81,7 +81,7 @@ Picking "Execute the plan" opens one screen describing *how* the plan will run:
 - **Context** opens a multiline editor for a run-only note. Press `Ctrl+N` from anywhere in the pre-flight list to jump directly to it; the note is supplied to the agent during this execution, survives that session's continuation/resume, and is not saved to the plan file.
 - Headless runs (print/RPC, `ctx.hasUI === false`) skip the panel entirely and execute with the session's current model and the default "keep going" mode.
 
-The choices are applied with `pi.setModel()` / `pi.setThinkingLevel()`. Those also rewrite pi's **global defaults**, so the extension snapshots the previous model/level first and restores it when the plan completes (or when you re-enter plan mode mid-execution), reporting `Restored <provider>/<id> (thinking: <level>)` with the level read back from `pi.getThinkingLevel()`, so the notice states what is actually in effect. A no-op selection takes no snapshot and triggers no restore.
+The choices are applied with `pi.setModel()` / `pi.setThinkingLevel()`. Those also rewrite pi's **global defaults**, so the selected execution model intentionally remains active after the plan finishes (including when you re-enter plan mode mid-execution) to preserve the prompt cache. The pre-execution thinking level is restored on the active model and may be clamped if unsupported. The notice reports the model and effective thinking level. A no-op selection takes no snapshot and triggers no restore.
 
 ### Step gating (stop or keep going after each step)
 
@@ -160,7 +160,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 
 ### Execution Mode
 - Full tool access restored
-- The model/thinking level chosen in the pre-flight panel are applied, and restored when the plan finishes
+- The model chosen in the pre-flight panel remains active after the plan finishes; the previous thinking level is restored where supported
 - Agent executes steps in order
 - Agent calls `complete_plan_step` after each finished step; it rejects calls outside execution, repeated steps, missing steps, and out-of-order steps without changing progress
 - `update_plan` is available in every mode; in planning/execution it defaults to the active plan, while outside those modes it requires a filename or path from `list_plans`. Step changes require the complete ordered list and preserve completion for unchanged steps; optional Context/Notes/Results fields replace those sections, while omitted fields remain unchanged.

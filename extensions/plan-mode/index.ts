@@ -72,13 +72,11 @@ const PLAN_GATED_TOOLS = new Set<string>(["write", "edit"]);
 const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
 
 /**
- * Model + thinking level active before execution applied a switch, so it can be
- * put back when the plan finishes. Stored as a plain `"provider"`/`"modelId"`
- * pair (not a `Model` object) so it survives session persistence.
+ * Thinking level active before execution changed it, so it can be restored when
+ * the plan finishes. The execution model deliberately remains active to avoid
+ * switching away from the model that just built the plan's prompt cache.
  */
 interface ModelSnapshot {
-	provider: string;
-	modelId: string;
 	thinkingLevel: ThinkingLevelName;
 }
 
@@ -273,12 +271,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Ends an execution run: clears execution state and, when execution had
-	 * switched the model/thinking level, puts the previous ones back.
-	 *
-	 * The restore matters because `pi.setModel`/`pi.setThinkingLevel` also write
-	 * pi's *global defaults* - without it, executing one plan on a heavier model
-	 * would silently become the user's default for every later session.
+	 * Ends an execution run: clears execution state and restores the previous
+	 * thinking level when execution changed it. The execution model stays active;
+	 * switching back here would discard the prompt cache just built by that model.
 	 */
 	async function endExecution(ctx: ExtensionContext): Promise<void> {
 		executionMode = false;
@@ -291,29 +286,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		modelSnapshot = undefined;
 		if (!snapshot) return;
 
-		const previous = ctx.modelRegistry.find(snapshot.provider, snapshot.modelId);
-		if (!previous) {
-			ctx.ui.notify(
-				`Plan mode: could not restore ${formatModelRef(snapshot.provider, snapshot.modelId)} (no longer available); keeping the current model.`,
-				"warning",
-			);
-			return;
-		}
-
 		try {
-			const ok = await pi.setModel(previous);
-			if (!ok) {
-				ctx.ui.notify(
-					`Plan mode: could not restore ${formatModelRef(snapshot.provider, snapshot.modelId)}; keeping the current model.`,
-					"warning",
-				);
-				return;
-			}
 			pi.setThinkingLevel(snapshot.thinkingLevel);
 			const level = normalizeThinkingLevel(pi.getThinkingLevel()) ?? "off";
-			ctx.ui.notify(`Restored ${formatModelRef(snapshot.provider, snapshot.modelId)} (thinking: ${level}).`, "info");
+			const activeModel = ctx.model;
+			const modelRef = activeModel ? formatModelRef(activeModel.provider, activeModel.id) : "the current model";
+			ctx.ui.notify(`Keeping ${modelRef} active (thinking: ${level}).`, "info");
 		} catch (err) {
-			ctx.ui.notify(`Plan mode: model restore failed (${(err as Error).message}).`, "warning");
+			ctx.ui.notify(`Plan mode: thinking-level restore failed (${(err as Error).message}).`, "warning");
 		}
 	}
 
@@ -1017,10 +997,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	/**
 	 * Applies the pre-flight choices to the live session.
 	 *
-	 * Takes a snapshot of the current model/thinking level *before* changing
+	 * Takes a snapshot of the current thinking level *before* changing
 	 * anything (and only when something actually changes), because pi's
-	 * `setModel`/`setThinkingLevel` also rewrite the user's global defaults - the
-	 * snapshot is what `endExecution` uses to put things back afterwards.
+	 * `setModel`/`setThinkingLevel` also rewrite the user's global defaults. The
+	 * model intentionally stays selected; `endExecution` restores only thinking.
 	 *
 	 * Never throws and never aborts execution: if the chosen model has no usable
 	 * auth, the plan still runs on the current model.
@@ -1038,8 +1018,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		if (currentModel) {
 			modelSnapshot = {
-				provider: currentModel.provider,
-				modelId: currentModel.id,
 				thinkingLevel: currentThinking,
 			};
 		}
@@ -1680,6 +1658,18 @@ ${buildExecutionInstructions(stepMode)}`;
 			if (refinement?.trim()) {
 				pi.sendMessage(planTodoListMessage, { deliverAs: "followUp" });
 				pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
+				// sendUserMessage only queues follow-ups; unlike sendMessage it cannot
+				// start a turn. Queue an explicit trigger after both context messages so
+				// the refinement is acted on immediately instead of waiting for another
+				// user prompt.
+				pi.sendMessage(
+					{
+						customType: "plan-mode-refine",
+						content: "Refine the plan above according to the user's request. Stay in plan mode; do not execute it.",
+						display: false,
+					},
+					{ triggerTurn: true, deliverAs: "followUp" },
+				);
 			}
 		}
 	});

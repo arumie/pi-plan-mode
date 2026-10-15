@@ -2,6 +2,13 @@
 
 All notable changes to this package are documented in this file.
 
+## [1.3.1] - 2026-10-15
+
+### Fixed
+
+- Trigger an agent turn after submitting a plan refinement, so it is processed immediately instead of waiting for another user prompt.
+- Keep the selected execution model active after a plan finishes to avoid an unnecessary model switch and prompt-cache miss.
+
 ## [1.3.0] - 2026-10-02
 
 ### Added
