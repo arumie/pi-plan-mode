@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented in this file.
 
+## [2.0.0] - 2026-10-26
+
+### Changed
+
+- Replace whole-section Context/Notes/Results updates with exact-match `sectionEdits` and additive `sectionAppends` operations. Stale or ambiguous edits fail without writing, preventing accidental loss of saved section content.
+
 ## [1.3.1] - 2026-10-15
 
 ### Fixed

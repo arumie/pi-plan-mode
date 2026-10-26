@@ -7,7 +7,7 @@ Read-only exploration mode for safe code analysis, distributed as the [`@arumie/
 Install the package from a pinned Git release:
 
 ```sh
-pi install git:github.com/arumie/pi-plan-mode@v1.3.1
+pi install git:github.com/arumie/pi-plan-mode@v2.0.0
 ```
 
 Restart pi (or run `/reload`) after installation. For local development from a checkout, use `pi -e /absolute/path/to/pi-plan-mode`. Do not leave the legacy auto-discovered `~/.pi/agent/extensions/plan-mode/` directory active at the same time: it would load a second copy and duplicate `/plan` and `Ctrl+Alt+P` registrations.
@@ -164,6 +164,18 @@ todos: [{"step":1,"text":"...","completed":false}]
 - Agent executes steps in order
 - Agent calls `complete_plan_step` after each finished step; it rejects calls outside execution, repeated steps, missing steps, and out-of-order steps without changing progress
 - `update_plan` is available in every mode; in planning/execution it defaults to the active plan, while outside those modes it requires a filename or path from `list_plans`. Step changes require the complete ordered list and preserve completion for unchanged steps. Context/Notes/Results are changed only with exact-match `sectionEdits` or non-destructive `sectionAppends`; a stale or ambiguous match fails without writing the file.
+
+For example, replace one exact passage or append without removing existing text:
+
+```json
+{
+  "sectionEdits": [{ "section": "context", "oldText": "Old sentence.", "newText": "Updated sentence." }],
+  "sectionAppends": [{ "section": "notes", "text": "Additional verification note." }]
+}
+```
+
+An empty `newText` removes only the matched `oldText`. `oldText` must occur exactly once within that section; on a mismatch, re-read the plan and retry.
+
 - Widget shows progress and the current step-gating mode
 - In `stop after each step` mode, a `Step n/N complete - continue?` prompt appears after each completed step
 - The backing plan file's compact `todos` frontmatter is kept in sync on disk as steps complete or the plan is revised, so progress survives a session restart or a resume via `/plan list`
