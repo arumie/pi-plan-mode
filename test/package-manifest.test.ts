@@ -21,7 +21,25 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as PackageManifest;
 const files = new Set(manifest.files ?? []);
 const extensionEntry = "extensions/plan-mode/index.ts";
-const runtimeModules = [extensionEntry, "extensions/plan-mode/utils.ts"];
+const runtimeModules = [
+	extensionEntry,
+	"extensions/plan-mode/utils.ts",
+	"extensions/plan-mode/plan-runtime.ts",
+	"extensions/plan-mode/plan-tools.ts",
+	"extensions/plan-mode/plan-commands.ts",
+	"extensions/plan-mode/execution-preflight.ts",
+	"extensions/plan-mode/lifecycle-hooks.ts",
+	"extensions/plan-mode/message-utils.ts",
+	"extensions/plan-mode/tool-policy.ts",
+	"extensions/plan-mode/plan-types.ts",
+	"extensions/plan-mode/plan-settings.ts",
+	"extensions/plan-mode/plan-paths.ts",
+	"extensions/plan-mode/plan-frontmatter.ts",
+	"extensions/plan-mode/plan-content.ts",
+	"extensions/plan-mode/plan-files.ts",
+	"extensions/plan-mode/command-safety.ts",
+	"extensions/plan-mode/plan-widget.ts",
+];
 
 assert.deepEqual(manifest.pi?.extensions, [`./${extensionEntry}`], "pi must load the explicit packaged extension entry");
 assert.equal(manifest.engines?.node, ">=22", "package must declare its Node 22 runtime requirement");
@@ -33,13 +51,15 @@ for (const module of runtimeModules) {
 assert.ok(files.has("extensions/plan-mode/README.md"), "extension documentation must be published");
 assert.ok(!files.has("extensions/plan-mode/utils.test.ts"), "test-only source must not be published");
 
-const entrySource = await readFile(join(root, extensionEntry), "utf8");
-for (const specifier of entrySource.matchAll(/from\s+["'](\.[^"']+)["']/g)) {
-	const imported = specifier[1];
-	if (!imported) continue;
-	const sourcePath = resolve(dirname(join(root, extensionEntry)), imported);
-	const packagePath = relative(root, sourcePath);
-	assert.ok(files.has(packagePath), `${packagePath} is imported by ${extensionEntry} and must be published`);
+for (const module of runtimeModules) {
+	const source = await readFile(join(root, module), "utf8");
+	for (const specifier of source.matchAll(/from\s+["'](\.[^"']+)["']/g)) {
+		const imported = specifier[1];
+		if (!imported) continue;
+		const sourcePath = resolve(dirname(join(root, module)), imported);
+		const packagePath = relative(root, sourcePath);
+		assert.ok(files.has(packagePath), `${packagePath} is imported by ${module} and must be published`);
+	}
 }
 
 for (const packageName of [
