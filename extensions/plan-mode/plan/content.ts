@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { parseFrontmatter, stringifyFrontmatter } from "./plan-frontmatter.ts";
-import type { PlanFrontmatter, TodoItem } from "./plan-types.ts";
+import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
+import type { PlanFrontmatter, TodoItem } from "./types.ts";
 
 export interface PlanContentDefaults {
 	repo: string;

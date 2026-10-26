@@ -2,27 +2,18 @@ import { readFile } from "node:fs/promises";
 import { Key, Text } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	applyExecutionSettings,
 	buildExecutionInstructions,
 	persistExecutionSettings,
 	seedExecutionSettings,
 	selectSavedPlan,
 	showExecutionPreflight,
-	applyExecutionSettings,
 } from "./execution-preflight.ts";
-import {
-	detectRepoName,
-	extractPlanTitle,
-	formatModelRef,
-	listSavedPlans,
-	planWriteDir,
-	readPlanFrontmatter,
-	stepModeLabel,
-	syncPlanTodosFromBody,
-	toDisplayPath,
-	writePlanTodos,
-} from "./utils.ts";
-import type { StepMode } from "./utils.ts";
-import type { PlanModeRuntime, ResolvedExecutionSettings } from "./plan-runtime.ts";
+import { extractPlanTitle } from "../plan/content.ts";
+import { listSavedPlans, readPlanFrontmatter, syncPlanTodosFromBody, writePlanTodos } from "../plan/files.ts";
+import { detectRepoName, planWriteDir, toDisplayPath } from "../plan/paths.ts";
+import { formatModelRef, stepModeLabel, type StepMode } from "../plan/settings.ts";
+import type { PlanModeRuntime, ResolvedExecutionSettings } from "./runtime.ts";
 
 async function loadSavedPlan(runtime: PlanModeRuntime, ctx: ExtensionContext, args: string): Promise<void> {
 	const dir = planWriteDir();

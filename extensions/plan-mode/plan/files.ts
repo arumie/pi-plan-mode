@@ -1,10 +1,10 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { PlanExecutionSettings } from "./plan-settings.ts";
-import { planWriteDir, extractDateFromFilename, deriveTitleFromFilename } from "./plan-paths.ts";
-import { parseFrontmatter, stringifyFrontmatter } from "./plan-frontmatter.ts";
-import { compactTodoDescriptions, extractPlanTitle, extractTodoItems, mergeTodoCompletion } from "./plan-content.ts";
-import type { PlanFrontmatter, SavedPlan, TodoItem } from "./plan-types.ts";
+import type { PlanExecutionSettings } from "./settings.ts";
+import { planWriteDir, extractDateFromFilename, deriveTitleFromFilename } from "./paths.ts";
+import { parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
+import { compactTodoDescriptions, extractPlanTitle, extractTodoItems, mergeTodoCompletion } from "./content.ts";
+import type { PlanFrontmatter, SavedPlan, TodoItem } from "./types.ts";
 
 /**
  * Reads a plan file and parses its frontmatter/body. Returns `null` on any

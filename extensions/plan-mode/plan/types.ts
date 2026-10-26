@@ -1,4 +1,4 @@
-import type { StepMode, ThinkingLevelName } from "./plan-settings.ts";
+import type { StepMode, ThinkingLevelName } from "./settings.ts";
 
 export interface SavedPlan {
 	/** Filename relative to the plans directory, e.g. "2026-07-30-foo.md" */

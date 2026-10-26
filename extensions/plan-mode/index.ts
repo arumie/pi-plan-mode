@@ -10,34 +10,22 @@ import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import {
-	buildTodoWidgetRows,
-	detectRepoName,
-	extractPlanTitle,
-	formatModelRef,
-	formatTodoWidgetText,
-	normalizeThinkingLevel,
-	planFilename,
-	planWriteDir,
-	slugify,
-	stepModeLabel,
-	stringifyFrontmatter,
-	type PlanFrontmatter,
-	type StepMode,
-	type ThinkingLevelName,
-	type TodoItem,
-	type TodoWidgetRow,
-} from "./utils.ts";
+import { normalizeThinkingLevel, formatModelRef, stepModeLabel, type StepMode } from "./plan/settings.ts";
+import { detectRepoName, planFilename, planWriteDir, slugify } from "./plan/paths.ts";
+import { extractPlanTitle } from "./plan/content.ts";
+import { stringifyFrontmatter } from "./plan/frontmatter.ts";
+import type { PlanFrontmatter, TodoItem } from "./plan/types.ts";
+import { buildTodoWidgetRows, formatTodoWidgetText, type TodoWidgetRow } from "./plan/widget.ts";
 import {
 	NORMAL_MODE_TOOLS,
 	PLAN_MANAGED_TOOLS,
 	PLAN_MODE_DISABLED_TOOLS,
 	PLAN_MODE_TOOLS,
-} from "./tool-policy.ts";
-import { registerPlanCommands } from "./plan-commands.ts";
-import { registerPlanLifecycleHooks } from "./lifecycle-hooks.ts";
-import { registerPlanTools } from "./plan-tools.ts";
-import type { ModelSnapshot, PlanModeRuntime } from "./plan-runtime.ts";
+} from "./security/tool-policy.ts";
+import { registerPlanCommands } from "./runtime/commands.ts";
+import { registerPlanLifecycleHooks } from "./runtime/lifecycle-hooks.ts";
+import { registerPlanTools } from "./runtime/tools.ts";
+import type { ModelSnapshot, PlanModeRuntime } from "./runtime/runtime.ts";
 
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;

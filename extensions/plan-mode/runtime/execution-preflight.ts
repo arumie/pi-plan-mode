@@ -6,17 +6,16 @@ import {
 	buildModelPickerItems,
 	formatModelRef,
 	parseModelRef,
-	readPlanExecutionSettings,
 	stepModeLabel,
 	THINKING_LEVELS,
 	normalizeThinkingLevel,
 	type ModelPickerScope,
-	type SavedPlan,
 	type StepMode,
 	type ThinkingLevelName,
-	writePlanExecutionSettings,
-} from "./utils.ts";
-import type { PlanModeRuntime, ResolvedExecutionSettings } from "./plan-runtime.ts";
+} from "../plan/settings.ts";
+import { readPlanExecutionSettings, writePlanExecutionSettings } from "../plan/files.ts";
+import type { SavedPlan } from "../plan/types.ts";
+import type { PlanModeRuntime, ResolvedExecutionSettings } from "./runtime.ts";
 
 /** Shared execution discipline sent both at execution start and when resuming. */
 export function buildExecutionInstructions(mode: StepMode): string {

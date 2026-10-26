@@ -119,7 +119,7 @@ after each step: keep going
 
 Full normalized step descriptions remain in the plan body and execution context. Only the extension-managed `todos` frontmatter labels are shortened to at most 100 characters (with `...` when needed); the TUI widget may further ellipsize a label to fit the current terminal width. Its custom component rerenders on resize, so wider terminals reveal more of the frontmatter label without losing the detailed plan text.
 
-The compact row count intentionally remains fixed. pi's TUI hard-caps string-array widgets at `InteractiveMode.MAX_WIDGET_LINES` (10 lines), and a long plan used to lose exactly the still-pending portion. `buildTodoWidgetRows` in `plan-widget.ts` still emits at most `MAX_TODO_WIDGET_ROWS` (8) structural rows: summary, current step, pending steps, and an exact `+N more` tail. TUI mode renders those rows with the width-responsive component; RPC/non-TUI clients receive a bounded string-array fallback. Unit tests cover long-description persistence, width boundaries, and the fixed-row `+N more` regression sweep.
+The compact row count intentionally remains fixed. pi's TUI hard-caps string-array widgets at `InteractiveMode.MAX_WIDGET_LINES` (10 lines), and a long plan used to lose exactly the still-pending portion. `buildTodoWidgetRows` in `plan/widget.ts` still emits at most `MAX_TODO_WIDGET_ROWS` (8) structural rows: summary, current step, pending steps, and an exact `+N more` tail. TUI mode renders those rows with the width-responsive component; RPC/non-TUI clients receive a bounded string-array fallback. Unit tests cover long-description persistence, width boundaries, and the fixed-row `+N more` regression sweep.
 
 For the full, uncollapsed list at any time, use `/todos`.
 
@@ -171,7 +171,7 @@ todos: [{"step":1,"text":"...","completed":false}]
 
 ### Command Allowlist
 
-The bash gate is structural, not a substring scan (`checkCommandSafety` in `command-safety.ts`):
+The bash gate is structural, not a substring scan (`checkCommandSafety` in `security/command-safety.ts`):
 
 1. The command line is split into segments quote-aware (`&&`, `||`, `|`, `;`, `&`, newlines) — a `|` or `>` inside a quoted `rg`/`grep` pattern never counts as shell syntax, and heredoc bodies are treated as data.
 2. Each segment's **command word** must be on the read-only allowlist; commands with mixed read/write subcommands (`git`, `gh`, `go`, `npm`, `docker`, `kubectl`, ...) additionally have to match a read-only subcommand pattern.
@@ -202,7 +202,7 @@ Blocked (examples):
 
 ## Tests
 
-The focused helpers (`command-safety.ts`, `plan-frontmatter.ts`, `plan-content.ts`, `plan-files.ts`, `plan-settings.ts`, and `plan-widget.ts`) are re-exported through `utils.ts` for compatibility and covered by the utility test file:
+The focused helpers under `plan/` and `security/` are re-exported through `utils.ts` for compatibility and covered by the utility test file:
 
 ```sh
 node --experimental-strip-types extensions/plan-mode/utils.test.ts

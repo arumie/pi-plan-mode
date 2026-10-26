@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { TodoItem } from "./plan-types.ts";
+import type { TodoItem } from "./types.ts";
 
 /**
  * A single line of the compact progress widget, described structurally so the

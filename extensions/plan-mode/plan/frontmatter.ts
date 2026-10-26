@@ -1,5 +1,5 @@
-import { normalizeStepMode, normalizeThinkingLevel, parseModelRef, STEP_MODES, type StepMode } from "./plan-settings.ts";
-import type { PlanFrontmatter, TodoItem } from "./plan-types.ts";
+import { normalizeStepMode, normalizeThinkingLevel, parseModelRef, STEP_MODES, type StepMode } from "./settings.ts";
+import type { PlanFrontmatter, TodoItem } from "./types.ts";
 
 const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 

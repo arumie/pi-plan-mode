@@ -2,19 +2,11 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import {
-	detectRepoName,
-	listSavedPlans,
-	normalizePlanContent,
-	planFilename,
-	planWriteDir,
-	resolvePlanPath,
-	toDisplayPath,
-	stringifyFrontmatter,
-	updatePlanContentInContent,
-	writePlanTodos,
-} from "./utils.ts";
-import type { PlanModeRuntime } from "./plan-runtime.ts";
+import { stringifyFrontmatter } from "../plan/frontmatter.ts";
+import { normalizePlanContent, updatePlanContentInContent } from "../plan/content.ts";
+import { listSavedPlans, writePlanTodos } from "../plan/files.ts";
+import { detectRepoName, planFilename, planWriteDir, resolvePlanPath, toDisplayPath } from "../plan/paths.ts";
+import type { PlanModeRuntime } from "./runtime.ts";
 
 async function planFileExists(path: string): Promise<boolean> {
 	try {

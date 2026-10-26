@@ -11,26 +11,22 @@ import {
 	applyExecutionSettings,
 	persistExecutionSettings,
 } from "./execution-preflight.ts";
+import { normalizePlanContent, extractPlanTitle, extractTodoItems } from "../plan/content.ts";
+import { readPlanFrontmatter, syncPlanTodosFromBody, writePlanTodos } from "../plan/files.ts";
 import {
-	checkCommandSafety,
-	detectRepoName,
 	deriveTitleFromFilename,
 	extractDateFromFilename,
-	extractPlanTitle,
-	extractTodoItems,
+	detectRepoName,
 	isPlanFilePath,
-	normalizePlanContent,
 	planWriteDir,
-	readPlanFrontmatter,
 	resolvePlanPath,
-	syncPlanTodosFromBody,
-	normalizeStepMode,
-	writePlanTodos,
-	type TodoItem,
-} from "./utils.ts";
+} from "../plan/paths.ts";
+import { normalizeStepMode } from "../plan/settings.ts";
+import type { TodoItem } from "../plan/types.ts";
+import { checkCommandSafety } from "../security/command-safety.ts";
+import { PLAN_GATED_TOOLS, PLAN_MODE_DISABLED_TOOLS, PLAN_MODE_MUTATION_TOOLS } from "../security/tool-policy.ts";
 import { isAssistantMessage, getTextContent } from "./message-utils.ts";
-import { PLAN_GATED_TOOLS, PLAN_MODE_DISABLED_TOOLS, PLAN_MODE_MUTATION_TOOLS } from "./tool-policy.ts";
-import type { PlanModeRuntime, PlanModeState, ResolvedExecutionSettings } from "./plan-runtime.ts";
+import type { PlanModeRuntime, PlanModeState, ResolvedExecutionSettings } from "./runtime.ts";
 
 export function registerPlanLifecycleHooks(runtime: PlanModeRuntime): void {
 	const { pi } = runtime;

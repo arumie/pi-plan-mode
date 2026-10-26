@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { StepMode, ThinkingLevelName, TodoItem } from "./utils.ts";
+import type { StepMode, ThinkingLevelName } from "../plan/settings.ts";
+import type { TodoItem } from "../plan/types.ts";
 
 export interface ModelSnapshot {
 	thinkingLevel: ThinkingLevelName;
