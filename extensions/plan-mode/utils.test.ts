@@ -289,42 +289,69 @@ await check("managed sections are peers regardless of Markdown heading depth", (
 	for (const contextHeader of ["# Context", "## Context", "Context:", "**Context:**"]) {
 		for (const planHeader of ["Plan:", "**Plan:**", "# Plan", "## Plan", "### Plan"]) {
 			const original = `${contextHeader}\nOld context.\n\n${planHeader}\n\n1. Implement actual feature\n\n#### Notes\nOriginal notes.\n\n##### Results\nOriginal results.\n`;
-			const contextUpdated = updatePlanContentInContent(original, { context: "Updated background" });
+			const contextUpdated = updatePlanContentInContent(original, { sectionEdits: [{ section: "context", oldText: "Old context.", newText: "Updated background" }] });
 			const body = parseFrontmatter(contextUpdated.content).body;
 			assert.ok(body.includes(`${planHeader}\n\n1. Implement actual feature`), "updating Context preserves the Plan");
 			assert.ok(body.includes("#### Notes\nOriginal notes."), "omitted Notes stays unchanged");
 			assert.ok(body.includes("##### Results\nOriginal results."), "omitted Results stays unchanged");
 			assert.deepEqual(extractTodoItems(body), contextUpdated.todos);
-			const notesUpdated = updatePlanContentInContent(contextUpdated.content, { notes: "Updated notes" });
+			const notesUpdated = updatePlanContentInContent(contextUpdated.content, { sectionEdits: [{ section: "notes", oldText: "Original notes.", newText: "Updated notes" }] });
 			assert.ok(notesUpdated.content.includes("##### Results\nOriginal results."), "updating Notes cannot consume deeper Results");
-			const resultsUpdated = updatePlanContentInContent(notesUpdated.content, { results: "Updated results" });
-			assert.ok(resultsUpdated.content.includes("#### Notes\n\nUpdated notes"));
+			const resultsUpdated = updatePlanContentInContent(notesUpdated.content, { sectionEdits: [{ section: "results", oldText: "Original results.", newText: "Updated results" }] });
+			assert.ok(resultsUpdated.content.includes("#### Notes\nUpdated notes"));
 			assert.deepEqual(extractTodoItems(parseFrontmatter(resultsUpdated.content).body), contextUpdated.todos);
 		}
 	}
 });
 
-await check("updatePlanContentInContent replaces only supplied Context/Notes/Results sections", () => {
-	const previous = `---\ntitle: Example\ntodos: [{"step":1,"text":"First detailed step description","completed":true}]\n---\n\n# Example\n\n## Context\nOld context.\n\n## Notes\nOld notes.\n\n### Nested note\nRemove this with the Notes replacement.\n\n## Results\nOld results.\n\n## Other\nPreserve this section.`;
-	const updated = updatePlanContentInContent(previous, { notes: "Revised notes.\nAdditional detail.", results: "Verified behavior." });
+await check("updatePlanContentInContent applies exact section edits and appends without replacing existing content", () => {
+	const previous = `---\ntitle: Example\ntodos: [{"step":1,"text":"First detailed step description","completed":true}]\n---\n\n# Example\n\nPlan:\n\n1. First detailed step description\n\n## Context\nOld context with useful detail.\n\n## Notes\nOld notes.\n\n### Nested note\nKeep this nested content.\n\n## Results\nOld results.\n\n## Other\nPreserve this section.`;
+	const updated = updatePlanContentInContent(previous, {
+		sectionEdits: [
+			{ section: "notes", oldText: "Old notes.", newText: "Revised notes." },
+			{ section: "results", oldText: "Old results.", newText: "Verified behavior." },
+		],
+		sectionAppends: [{ section: "context", text: "Additional context." }],
+	});
 	const parsed = parseFrontmatter(updated.content);
-	assert.ok(parsed.body.includes("## Context\nOld context."), "omitted Context remains unchanged");
-	assert.ok(parsed.body.includes("## Notes\n\nRevised notes.\nAdditional detail."));
-	assert.ok(!parsed.body.includes("Nested note"), "nested content within the replaced section is replaced too");
-	assert.ok(parsed.body.includes("## Results\n\nVerified behavior."));
+	assert.ok(parsed.body.includes("## Context\nOld context with useful detail.\n\nAdditional context."), "append adds context without replacing existing content");
+	assert.ok(parsed.body.includes("## Notes\nRevised notes."), "only the exact matched text is replaced");
+	assert.ok(!parsed.body.includes("Old notes."));
+	assert.ok(parsed.body.includes("### Nested note\nKeep this nested content."), "unmatched nested content is preserved");
+	assert.ok(parsed.body.includes("## Results\nVerified behavior."));
 	assert.ok(parsed.body.includes("## Other\nPreserve this section."), "unrelated sections remain unchanged");
 	assert.deepEqual(updated.todos.map((todo) => todo.completed), [true]);
 	assert.equal(parsed.frontmatter.todos?.[0]?.completed, true);
-	const revisedAgain = updatePlanContentInContent(updated.content, { context: "Added later." });
-	assert.ok(parseFrontmatter(revisedAgain.content).body.includes("## Context\n\nAdded later."));
-	assert.ok(revisedAgain.content.includes("Revised notes."), "omitted section fields remain unchanged");
-	const appended = updatePlanContentInContent("Plan:\n\n1. Preserve this complete plan step.\n", { context: "Fresh context." });
-	assert.ok(parseFrontmatter(appended.content).body.includes("## Context\n\nFresh context."), "missing sections are added as level-two headings");
+
+	const targetedEdit = updatePlanContentInContent(updated.content, {
+		sectionEdits: [{ section: "context", oldText: "useful detail", newText: "important background" }],
+	});
+	assert.ok(targetedEdit.content.includes("Old context with important background."));
+	assert.ok(targetedEdit.content.includes("Additional context."), "a local edit preserves appended context");
+	const removedText = updatePlanContentInContent(targetedEdit.content, {
+		sectionEdits: [{ section: "context", oldText: "important background", newText: "" }],
+	});
+	assert.ok(removedText.content.includes("Old context with ."), "empty newText removes only the explicitly matched text");
+	assert.ok(removedText.content.includes("Additional context."), "targeted removal preserves unmatched content");
+	assert.throws(() => updatePlanContentInContent(targetedEdit.content, {
+		sectionEdits: [{ section: "context", oldText: "missing text", newText: "replacement" }],
+	}), /oldText was not found/);
+	assert.throws(() => updatePlanContentInContent("## Notes\nrepeat repeat\n", {
+		sectionEdits: [{ section: "notes", oldText: "repeat", newText: "unique" }],
+	}), /matches more than once/);
+	assert.throws(() => updatePlanContentInContent(previous, {
+		sectionEdits: [{ section: "context", oldText: "", newText: "replacement" }],
+	}), /non-empty oldText/);
+	assert.throws(() => updatePlanContentInContent(previous, {}), /must include steps, sectionEdits, or sectionAppends/);
+	assert.throws(() => updatePlanContentInContent(`${previous}\n\n## Notes\nDuplicate.`, {
+		sectionAppends: [{ section: "notes", text: "More notes." }],
+	}), /multiple/);
+
+	const appended = updatePlanContentInContent("Plan:\n\n1. Preserve this complete plan step.\n", {
+		sectionAppends: [{ section: "context", text: "Fresh context." }],
+	});
+	assert.ok(parseFrontmatter(appended.content).body.includes("## Context\n\nFresh context."), "appending creates a missing section");
 	assert.ok(appended.content.includes("1. Preserve this complete plan step."), "adding a section preserves the Plan list");
-	const cleared = updatePlanContentInContent(updated.content, { notes: "" });
-	assert.ok(!cleared.content.includes("Revised notes."), "an empty section value clears that section");
-	assert.throws(() => updatePlanContentInContent(previous, {}), /must include steps, context, notes, or results/);
-	assert.throws(() => updatePlanContentInContent(`${previous}\n\n## Notes\nDuplicate.`, { notes: "A" }), /multiple/);
 });
 await check("compact labels retain distinct step identities across reload and reordering", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "plan-mode-identities-"));
@@ -359,8 +386,10 @@ await check("saved section checklists never become execution steps on reload", a
 	const path = join(dir, "plan.md");
 	for (const header of ["Plan:", "# Plan", "## Plan", "### Plan", "**Plan:**"]) {
 		const updated = updatePlanContentInContent(`${header}\n\n1. Implement the real feature\n`, {
-			notes: "Verification checklist:\n\n1. Check deployment logs\n2. Check operational metrics",
-			results: "1. Deployment succeeded",
+			sectionAppends: [
+				{ section: "notes", text: "Verification checklist:\n\n1. Check deployment logs\n2. Check operational metrics" },
+				{ section: "results", text: "1. Deployment succeeded" },
+			],
 		});
 		await writeFile(path, updated.content);
 		assert.deepEqual(await syncPlanTodosFromBody(path), updated.todos);
@@ -372,7 +401,7 @@ await check("section and step updates ignore headings and lists inside code fenc
 	for (const fence of ["```", "~~~~"]) {
 		const example = `${fence}markdown\n## Notes\nOld example\nPlan:\n1. Example step only\n${fence}`;
 		const content = `## Context\nExample:\n${example}\n\nPlan:\n\n1. Implement actual feature\n\n## Results\nPending\n`;
-		const notes = updatePlanContentInContent(content, { notes: "New notes" });
+		const notes = updatePlanContentInContent(content, { sectionAppends: [{ section: "notes", text: "New notes" }] });
 		assert.ok(notes.content.includes(example), "the entire fenced example is preserved");
 		assert.ok(notes.content.includes("## Notes\n\nNew notes"));
 		assert.deepEqual(extractTodoItems(parseFrontmatter(notes.content).body).map((todo) => todo.text), ["Implement actual feature"]);
@@ -380,9 +409,12 @@ await check("section and step updates ignore headings and lists inside code fenc
 		assert.ok(steps.content.includes(example), "step updates find the real Plan section");
 		assert.deepEqual(extractTodoItems(parseFrontmatter(steps.content).body), steps.todos);
 		const nested = `## Notes\nBefore example.\n${fence}markdown\n## Results\nExample output\n${fence}\nAfter example.\n\nPlan:\n\n1. Implement actual feature\n`;
-		const replaced = updatePlanContentInContent(nested, { notes: "Replacement notes" });
-		assert.ok(!replaced.content.includes("Example output"), "a fenced heading cannot end the enclosing section");
-		assert.ok(replaced.content.includes("1. Implement actual feature"));
+		const edited = updatePlanContentInContent(nested, {
+			sectionEdits: [{ section: "notes", oldText: "Before example.", newText: "Updated note." }],
+		});
+		assert.ok(edited.content.includes("Example output"), "a fenced heading cannot end the enclosing section");
+		assert.ok(edited.content.includes("After example."), "targeted edits preserve unmatched section content");
+		assert.ok(edited.content.includes("1. Implement actual feature"));
 	}
 });
 

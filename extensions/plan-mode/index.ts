@@ -115,7 +115,7 @@ function getTextContent(message: AssistantMessage): string {
  */
 function buildExecutionInstructions(mode: StepMode): string {
 	const completion =
-		"Work on ONE step at a time, in order. The moment you finish a step, call complete_plan_step with that step number before starting anything else. Do not wait until the whole plan is done, do not batch calls, and do not claim a step is complete without successfully calling the tool. If the scope or ordered steps need to change, call update_plan with the complete revised list of detailed steps first. If the saved plan's Context, Notes, or Results should change, use update_plan with the complete replacement for that section; omit sections that should remain unchanged.";
+		"Work on ONE step at a time, in order. The moment you finish a step, call complete_plan_step with that step number before starting anything else. Do not wait until the whole plan is done, do not batch calls, and do not claim a step is complete without successfully calling the tool. If the scope or ordered steps need to change, call update_plan with the complete revised list of detailed steps first. Section updates must be targeted: use sectionEdits with exact existing oldText and the intended newText, or sectionAppends to add content. Never replace a whole Context, Notes, or Results section as a routine update. Exact edits must match once; on mismatch, re-read the section and retry.";
 
 	if (mode === "stop") {
 		return `${completion}
@@ -500,23 +500,31 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		name: "update_plan",
 		executionMode: "sequential",
 		label: "Update Plan",
-		description: "Edit a specific saved plan in any mode. Set plan to a filename or path returned by list_plans; during planning or execution, omit it to target the active plan. Optionally provide the complete ordered steps and/or replacement text for its Context, Notes, and Results sections. Omitted fields remain unchanged.",
-		promptSnippet: "Revise the saved plan steps or its Context, Notes, and Results sections",
+		description: "Edit a specific saved plan in any mode. Set plan to a filename or path returned by list_plans; during planning or execution, omit it to target the active plan. Provide the complete ordered steps to change the plan, and use sectionEdits for exact targeted replacements or sectionAppends to add Context, Notes, or Results content. Section edits never replace a whole section implicitly.",
+		promptSnippet: "Revise plan steps or apply targeted section edits",
 		promptGuidelines: [
-			"In normal mode, call list_plans and pass the chosen filename or path as plan; during planning or execution, omitting plan targets the active plan. Include steps only when changing the ordered plan and supply the complete revised list; unchanged completed steps retain their state.",
-			"Context, notes, and results replace the body of their matching Markdown sections; omitted fields remain unchanged, and missing sections are created. These are saved plan sections, distinct from the run-only execution context note.",
+			"In normal mode, call list_plans and pass the chosen filename or path as plan; during planning or execution, omitting plan targets the active plan. Include steps only when changing the ordered plan and supply the complete revised list; unchanged completed steps retain their state. A steps-only update must not change Context, Notes, or Results.",
+			"For Context, Notes, or Results, use sectionEdits with the exact oldText to change and the intended newText, or sectionAppends to add text. oldText must occur exactly once in that section; if it does not, re-read the current plan and retry. An empty newText removes only the exact matched oldText. Never replace the whole section as a routine update. These saved sections are distinct from the run-only execution context note.",
 		],
 		parameters: Type.Object({
 			plan: Type.Optional(Type.String({ description: "Exact filename or absolute path returned by list_plans; required outside planning/execution mode" })),
 			steps: Type.Optional(Type.Array(Type.String({ minLength: 6 }), { minItems: 1, description: "Complete ordered list of detailed step descriptions; omit when steps do not change" })),
-			context: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Context section; empty text clears it" })),
-			notes: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Notes section; empty text clears it" })),
-			results: Type.Optional(Type.String({ description: "Replacement contents for the saved plan's Results section; empty text clears it" })),
+			sectionEdits: Type.Optional(Type.Array(Type.Object({
+				section: Type.Union([Type.Literal("context"), Type.Literal("notes"), Type.Literal("results")]),
+				oldText: Type.String({ minLength: 1, description: "Exact existing text to replace; must match exactly once in the section" }),
+				newText: Type.String({ description: "Replacement text for that exact match; empty text removes only the match" }),
+			}), { minItems: 1, description: "Targeted exact-match edits within saved sections" })),
+			sectionAppends: Type.Optional(Type.Array(Type.Object({
+				section: Type.Union([Type.Literal("context"), Type.Literal("notes"), Type.Literal("results")]),
+				text: Type.String({ minLength: 1, description: "Text to append without replacing existing section content" }),
+			}), { minItems: 1, description: "Append content to saved sections without removing existing text" })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Plan update cancelled.");
-			if (params.steps === undefined && params.context === undefined && params.notes === undefined && params.results === undefined) {
-				throw new Error("Supply at least one of steps, context, notes, or results to update.");
+			const sectionEdits = params.sectionEdits ?? [];
+			const sectionAppends = params.sectionAppends ?? [];
+			if (params.steps === undefined && sectionEdits.length === 0 && sectionAppends.length === 0) {
+				throw new Error("Supply steps, sectionEdits, or sectionAppends to update.");
 			}
 
 			const requestedPlan = params.plan?.trim();
@@ -544,7 +552,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (!path && !sessionOnlyPlan) {
 				throw new Error("Specify plan using a filename or path from list_plans when updating outside planning or execution mode.");
 			}
-			if (!path && (params.context !== undefined || params.notes !== undefined || params.results !== undefined)) {
+			if (!path && (sectionEdits.length > 0 || sectionAppends.length > 0)) {
 				throw new Error("Context, notes, and results can only be updated in a saved plan file.");
 			}
 			const updatesActivePlan = !requestedPlan || path === activePlanPath || (planModeEnabled && path === lastSavedPlanPath);
@@ -574,9 +582,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (updatesActivePlan && (planModeEnabled || executionMode)) persistState();
 			const changed = [
 				...(params.steps !== undefined ? ["ordered steps"] : []),
-				...(params.context !== undefined ? ["Context"] : []),
-				...(params.notes !== undefined ? ["Notes"] : []),
-				...(params.results !== undefined ? ["Results"] : []),
+				...new Set([
+					...sectionEdits.map(({ section }) => `${section[0]!.toUpperCase()}${section.slice(1)} (edited)`),
+					...sectionAppends.map(({ section }) => `${section[0]!.toUpperCase()}${section.slice(1)} (appended)`),
+				]),
 			];
 			const next = executionMode && updatesActivePlan ? todoItems.find((item) => !item.completed) : undefined;
 			return {

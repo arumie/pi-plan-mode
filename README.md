@@ -30,7 +30,7 @@ Do not run the package alongside the legacy auto-discovered extension at `~/.pi/
 - `save_plan` — agent tool available in and out of plan mode that saves a named plan with a generated `YYYY-MM-DD-` filename and managed frontmatter.
 - `complete_plan_step` — execution-only agent tool that records the next completed step in order.
 - `list_plans` — agent tool available in every mode to list saved plans and their filenames/paths.
-- `update_plan` — agent tool available in every mode; target a specific saved plan with a filename/path from `list_plans`, or omit it during planning/execution to use the active plan.
+- `update_plan` — agent tool available in every mode; target a specific saved plan with a filename/path from `list_plans`, or omit it during planning/execution to use the active plan. Context/Notes/Results changes use exact-text edits or append operations, so unmatched existing content is preserved.
 - The execution pre-flight offers an optional run-only context note (select **Context** or press `Ctrl+N`); it is not saved to plan frontmatter.
 - `/todos` — show the full current plan progress list.
 - `Ctrl+Alt+P` — toggle planning mode.

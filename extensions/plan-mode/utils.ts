@@ -642,16 +642,29 @@ export async function syncPlanTodosFromBody(path: string): Promise<TodoItem[]> {
 }
 
 /**
- * Replaces plan content supplied by the agent and refreshes compact progress
- * frontmatter when the ordered steps change. Omitted context/notes/results are
- * preserved; supplied values replace their matching Markdown section body.
+ * Revises the ordered steps and/or applies targeted edits to Context, Notes,
+ * and Results. Section edits require exact existing text and replace only that
+ * match; additions use sectionAppends. This prevents routine updates from
+ * replacing an entire section accidentally.
  */
 export function updatePlanContentInContent(
 	content: string,
-	updates: { steps?: string[]; context?: string; notes?: string; results?: string },
+	updates: {
+		steps?: string[];
+		sectionEdits?: Array<{ section: PlanContentSection; oldText: string; newText: string }>;
+		sectionAppends?: Array<{ section: PlanContentSection; text: string }>;
+	},
 ): { content: string; todos: TodoItem[] } {
-	if (updates.steps === undefined && updates.context === undefined && updates.notes === undefined && updates.results === undefined) {
-		throw new Error("A plan update must include steps, context, notes, or results.");
+	const sectionEdits = updates.sectionEdits ?? [];
+	const sectionAppends = updates.sectionAppends ?? [];
+	if (updates.steps === undefined && sectionEdits.length === 0 && sectionAppends.length === 0) {
+		throw new Error("A plan update must include steps, sectionEdits, or sectionAppends.");
+	}
+	for (const edit of sectionEdits) {
+		if (!edit.oldText) throw new Error("Section edits require non-empty oldText so the exact content to change is explicit.");
+	}
+	for (const append of sectionAppends) {
+		if (!append.text.trim()) throw new Error("Section appends require non-empty text.");
 	}
 	const { frontmatter, body } = parseFrontmatter(content);
 	const lines = body.split(/\r?\n/);
@@ -703,15 +716,18 @@ export function updatePlanContentInContent(
 		updatedFrontmatter = { ...frontmatter, todos: compactTodoDescriptions(todos) };
 	}
 
-	for (const [key, title] of [["context", "Context"], ["notes", "Notes"], ["results", "Results"]] as const) {
-		const value = updates[key];
-		if (value !== undefined) updateNamedPlanSection(lines, title, value);
+	for (const edit of sectionEdits) {
+		editNamedPlanSection(lines, edit.section, edit.oldText, edit.newText);
+	}
+	for (const append of sectionAppends) {
+		appendToNamedPlanSection(lines, append.section, append.text);
 	}
 
 	return { content: stringifyFrontmatter(updatedFrontmatter) + lines.join("\n"), todos };
 }
 
 const PLAN_CONTENT_SECTION_NAMES = new Set(["plan", "context", "notes", "results"]);
+type PlanContentSection = "context" | "notes" | "results";
 
 interface MarkdownSection {
 	index: number;
@@ -765,25 +781,53 @@ function findPlanSection(lines: string[], sections: MarkdownSection[], fenced: b
 		index > section.start && index < section.end && !fenced[index] && /^ {0,3}\d+[.)]\s+/.test(line))) ?? candidates.at(-1);
 }
 
-/**
- * Updates one Context/Notes/Results section, creating a level-two Markdown
- * heading when absent. Only real headings can delimit or identify sections.
- */
-function updateNamedPlanSection(lines: string[], title: string, value: string): void {
+/** Returns one named section's heading and body boundary, rejecting ambiguity. */
+function findNamedPlanSection(lines: string[], sectionName: PlanContentSection): { heading: MarkdownSection; end: number } | undefined {
 	const { sections } = scanPlanMarkdown(lines);
-	const matchingSections = sections.filter((heading) => heading.name === title.toLowerCase());
-	if (matchingSections.length > 1) throw new Error(`The plan has multiple "${title}" sections; keep only one before updating it.`);
-	const replacement = value.trim().length > 0 ? value.trim().split(/\r?\n/) : [];
-	if (matchingSections.length === 0) {
-		while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	const matching = sections.filter((section) => section.name === sectionName);
+	if (matching.length > 1) {
+		const title = sectionName[0]!.toUpperCase() + sectionName.slice(1);
+		throw new Error(`The plan has multiple "${title}" sections; keep only one before updating it.`);
+	}
+	const heading = matching[0];
+	return heading ? { heading, end: planSectionEnd(sections, heading, lines.length) } : undefined;
+}
+
+/** Replaces one exact, unique substring within a named section and nothing else. */
+function editNamedPlanSection(lines: string[], sectionName: PlanContentSection, oldText: string, newText: string): void {
+	const title = sectionName[0]!.toUpperCase() + sectionName.slice(1);
+	const section = findNamedPlanSection(lines, sectionName);
+	if (!section) throw new Error(`The plan has no "${title}" section to edit; use sectionAppends to add content.`);
+
+	const start = section.heading.index + 1;
+	const body = lines.slice(start, section.end).join("\n");
+	const matchIndex = body.indexOf(oldText);
+	if (matchIndex < 0) throw new Error(`oldText was not found in the "${title}" section; re-read the current section and retry.`);
+	if (body.indexOf(oldText, matchIndex + 1) >= 0) {
+		throw new Error(`oldText matches more than once in the "${title}" section; provide a more specific exact match.`);
+	}
+
+	const updatedBody = body.slice(0, matchIndex) + newText + body.slice(matchIndex + oldText.length);
+	lines.splice(start, section.end - start, ...updatedBody.split("\n"));
+}
+
+/** Appends content without replacing existing section text; creates a missing section. */
+function appendToNamedPlanSection(lines: string[], sectionName: PlanContentSection, text: string): void {
+	const title = sectionName[0]!.toUpperCase() + sectionName.slice(1);
+	const addition = text.trim();
+	const section = findNamedPlanSection(lines, sectionName);
+	if (!section) {
+		while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();
 		if (lines.length > 0) lines.push("");
-		lines.push(`## ${title}`, "", ...replacement, "");
+		lines.push(`## ${title}`, "", ...addition.split(/\r?\n/));
 		return;
 	}
 
-	const section = matchingSections[0]!;
-	const sectionEnd = planSectionEnd(sections, section, lines.length);
-	lines.splice(section.index + 1, sectionEnd - section.index - 1, "", ...replacement, "");
+	const start = section.heading.index + 1;
+	const body = lines.slice(start, section.end).join("\n");
+	const existing = body.replace(/\n+$/, "");
+	const updatedBody = existing.trim().length > 0 ? `${existing}\n\n${addition}` : `\n${addition}`;
+	lines.splice(start, section.end - start, ...updatedBody.split("\n"));
 }
 
 function getNamedPlanSectionHeading(line: string): { name: string; level: number } | undefined {

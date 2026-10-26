@@ -111,7 +111,7 @@ try {
 
 	const outsideUpdate = await updatePlan.execute(
 		"targeted-update-call",
-		{ plan: filename, notes: "Updated only the selected saved plan." },
+		{ plan: filename, sectionAppends: [{ section: "notes", text: "Updated only the selected saved plan." }] },
 		undefined,
 		undefined,
 		{ cwd: dir },
@@ -121,7 +121,7 @@ try {
 	assert.doesNotMatch(await readFile(secondSave.details.path, "utf8"), /Updated only the selected saved plan/);
 	assert.equal(persistedEntries, 0, "normal-mode plan edits must not change active plan state");
 	await assert.rejects(
-		() => updatePlan.execute("missing-target-call", { notes: "No target" }, undefined, undefined, { cwd: dir }),
+		() => updatePlan.execute("missing-target-call", { sectionAppends: [{ section: "notes", text: "No target" }] }, undefined, undefined, { cwd: dir }),
 		/Specify plan.*list_plans/,
 	);
 	console.log("✓ list_plans and update_plan target a specific saved plan in normal mode");
@@ -169,7 +169,14 @@ try {
 	await sessionStart({}, executionContext);
 	const updated = await updatePlan.execute(
 		"update-call",
-		{ steps: [firstStep, revisedSecond], context: "Revised context.", notes: "Revised notes.", results: "Verified results." },
+		{
+			steps: [firstStep, revisedSecond],
+			sectionEdits: [
+				{ section: "context", oldText: "Old context.", newText: "Revised context." },
+				{ section: "notes", oldText: "Old notes.", newText: "Revised notes." },
+				{ section: "results", oldText: "Old results.", newText: "Verified results." },
+			],
+		},
 		undefined,
 		undefined,
 		executionContext,
@@ -177,14 +184,37 @@ try {
 	assert.equal(updated.details.todos[0].completed, true, "unchanged completed steps retain progress");
 	assert.equal(updated.details.todos[1].text, revisedSecond.slice(0, -1), "execution state keeps the full revised description");
 	assert.match(await readFile(updatePath, "utf8"), new RegExp(revisedSecond));
+	const beforeStaleEdit = await readFile(updatePath, "utf8");
+	await assert.rejects(
+		() => updatePlan.execute(
+			"stale-section-edit-call",
+			{ sectionEdits: [{ section: "context", oldText: "Context from an outdated read.", newText: "Replacement." }] },
+			undefined,
+			undefined,
+			executionContext,
+		),
+		/oldText was not found/,
+	);
+	assert.equal(await readFile(updatePath, "utf8"), beforeStaleEdit, "a stale targeted edit fails without writing any changes");
+	const stepOnlyUpdate = await updatePlan.execute(
+		"step-only-update-call",
+		{ steps: [firstStep, revisedSecond] },
+		undefined,
+		undefined,
+		executionContext,
+	);
+	assert.deepEqual(stepOnlyUpdate.details.updated, ["ordered steps"], "step-only updates do not touch saved sections");
 	const updatedContent = await readFile(updatePath, "utf8");
+	assert.match(updatedContent, /## Context\nRevised context\./, "step-only updates preserve existing Context");
+	assert.match(updatedContent, /## Notes\nRevised notes\./, "step-only updates preserve existing Notes");
+	assert.match(updatedContent, /## Results\nVerified results\./, "step-only updates preserve existing Results");
 	const savedTodos = parseFrontmatter(updatedContent).frontmatter.todos!;
 	assert.deepEqual(savedTodos.map((todo) => todo.completed), [true, false]);
 	assert.equal(savedTodos[1]!.text, "Implement the revised persistence behavior and thoroughly verify that plan descriptions stay...");
 	assert.match(savedTodos[1]!.textHash!, /^[a-f0-9]{64}$/);
-	assert.match(updatedContent, /## Context\n\nRevised context\./);
-	assert.match(updatedContent, /## Notes\n\nRevised notes\./);
-	assert.match(updatedContent, /## Results\n\nVerified results\./);
+	assert.match(updatedContent, /## Context\nRevised context\./);
+	assert.match(updatedContent, /## Notes\nRevised notes\./);
+	assert.match(updatedContent, /## Results\nVerified results\./);
 	assert.ok(persistedEntries > 0, "updating the plan persists execution state");
 	console.log("✓ update_plan revises the saved Plan body and preserves concise frontmatter/progress");
 
@@ -210,7 +240,7 @@ try {
 	const sharedPrefix = "Implement the shared persistence and validation workflow across the service and verify all acceptance tests for ";
 	await updatePlan.execute("collision-update", {
 		steps: [sharedPrefix + "customer records", sharedPrefix + "business records"],
-		notes: "1. Check deployment logs\n2. Check operational metrics",
+		sectionAppends: [{ section: "notes", text: "1. Check deployment logs\n2. Check operational metrics" }],
 	}, undefined, undefined, executionContext);
 	const completeStep = tools.get("complete_plan_step")!;
 	await completeStep.execute("complete-first", { step: 1 }, undefined, undefined, executionContext);
@@ -249,14 +279,19 @@ try {
 	const planningPath = planningSave.details.path as string;
 	await updatePlan.execute(
 		"planning-update-call",
-		{ context: "Context revised during planning.", notes: "Notes revised during planning." },
+		{
+			sectionEdits: [
+				{ section: "context", oldText: "Initial context.", newText: "Context revised during planning." },
+				{ section: "notes", oldText: "Initial notes.", newText: "Notes revised during planning." },
+			],
+		},
 		undefined,
 		undefined,
 		executionContext,
 	);
 	const planningContent = await readFile(planningPath, "utf8");
-	assert.match(planningContent, /## Context\n\nContext revised during planning\./);
-	assert.match(planningContent, /## Notes\n\nNotes revised during planning\./);
+	assert.match(planningContent, /## Context\nContext revised during planning\./);
+	assert.match(planningContent, /## Notes\nNotes revised during planning\./);
 	assert.match(planningContent, /## Results\nPending\./, "omitted sections remain unchanged");
 	assert.match(planningContent, /1\. Prepare and validate a saved plan draft/, "section-only updates leave the plan steps unchanged");
 	console.log("✓ update_plan edits saved plan sections during planning; hashline mutators remain blocked");
