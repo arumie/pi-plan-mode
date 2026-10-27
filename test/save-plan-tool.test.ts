@@ -124,6 +124,16 @@ try {
 		() => updatePlan.execute("missing-target-call", { sectionAppends: [{ section: "notes", text: "No target" }] }, undefined, undefined, { cwd: dir }),
 		/Specify plan.*list_plans/,
 	);
+	await assert.rejects(
+		() => updatePlan.execute(
+			"outside-target-call",
+			{ plan: join(process.cwd(), "README.md"), sectionAppends: [{ section: "notes", text: "Must not be written" }] },
+			undefined,
+			undefined,
+			{ cwd: dir },
+		),
+		/Saved plan not found/,
+	);
 	console.log("✓ list_plans and update_plan target a specific saved plan in normal mode");
 
 

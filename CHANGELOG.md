@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented in this file.
 
+## [2.0.1] - 2026-10-27
+
+### Fixed
+
+- Resolve explicitly targeted plans directly instead of scanning and reading every saved plan before `update_plan` edits one, reducing unnecessary filesystem work.
+
 ## [2.0.0] - 2026-10-26
 
 ### Changed

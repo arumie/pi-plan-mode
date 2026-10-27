@@ -1,5 +1,5 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { stringifyFrontmatter } from "../plan/frontmatter.ts";
@@ -14,6 +14,23 @@ async function planFileExists(path: string): Promise<boolean> {
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * Resolve a saved plan by its listed filename or absolute path without scanning
+ * and reading every plan in the directory. Keep the same top-level Markdown,
+ * regular-file constraints as listSavedPlans().
+ */
+async function resolveSavedPlanPath(requestedPlan: string): Promise<string | undefined> {
+	const dir = planWriteDir();
+	if (!isAbsolute(requestedPlan) && basename(requestedPlan) !== requestedPlan) return undefined;
+	const candidate = isAbsolute(requestedPlan) ? resolve(requestedPlan) : resolve(dir, requestedPlan);
+	if (dirname(candidate) !== dir || !candidate.toLowerCase().endsWith(".md")) return undefined;
+	try {
+		return (await lstat(candidate)).isFile() ? candidate : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -197,11 +214,8 @@ export function registerPlanTools(runtime: PlanModeRuntime): void {
 
 			let path: string | undefined;
 			if (requestedPlan) {
-				const plans = await listSavedPlans(planWriteDir());
-				const absolutePath = resolve(requestedPlan);
-				const selected = plans.find((plan) => plan.name === requestedPlan || plan.path === absolutePath);
-				if (!selected) throw new Error(`Saved plan not found: ${requestedPlan}. Use list_plans to see valid filenames and paths.`);
-				path = selected.path;
+				path = await resolveSavedPlanPath(requestedPlan);
+				if (!path) throw new Error(`Saved plan not found: ${requestedPlan}. Use list_plans to see valid filenames and paths.`);
 			} else {
 				path = runtime.activePlanPath ?? (runtime.planModeEnabled ? runtime.lastSavedPlanPath : undefined);
 			}
